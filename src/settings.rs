@@ -4,10 +4,7 @@ use std::fs;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Settings {
-    pub rabbitmq_url: String,
-    // pub host: String,
-    // pub port: String,
-    // pub vhost: String,
+    pub rabbitmq_url: String
 }
 
 impl Settings {

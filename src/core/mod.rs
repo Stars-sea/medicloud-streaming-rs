@@ -1,9 +1,6 @@
 use std::{fs, path::Path};
 
-use crate::{
-    core::{input::SrtInput, output::HlsOutput},
-    messaging::messages::PullStreamCommand,
-};
+use crate::messaging::messages::PullStreamCommand;
 use anyhow::Result;
 use log::warn;
 
@@ -16,17 +13,17 @@ pub fn download_srt2hls(cmd: PullStreamCommand) -> Result<()> {
     }
 
     let mut input =
-        SrtInput::new(cmd.url, cmd.timeout, cmd.latency, cmd.ffs, cmd.passphrase).open_input()?;
+        input::open_srt_input(cmd.url, cmd.timeout, cmd.latency, cmd.ffs, cmd.passphrase)?;
 
     let hls_path = Path::new(&cmd.path).join("index.m3u8");
     let hls_path = hls_path.as_os_str().to_str().unwrap();
-    let mut output = HlsOutput::new(
+    let mut output = output::open_hls_output(
         cmd.segment_time,
         cmd.list_size,
         cmd.delete_segments,
         String::from(hls_path),
-    )
-    .open_output(&input)?;
+        &input,
+    )?;
 
     output.write_header()?;
 

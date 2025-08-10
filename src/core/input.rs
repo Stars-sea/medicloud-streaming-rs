@@ -6,36 +6,22 @@ use ffmpeg::{
     format::{self, context::Input},
 };
 
-pub struct SrtInput {
-    pub url: String,
-    pub timeout: u64,
-    pub latency: u64,
-    pub ffs: u64,
-    pub passphrase: String,
-}
+pub fn open_srt_input(
+    url: String,
+    timeout: u64,
+    latency: u64,
+    ffs: u64,
+    passphrase: String,
+) -> Result<Input> {
+    let mut options = dict!(
+        "timeout" => &timeout.to_string(),
+        "latency" => &latency.to_string(),
+        "ffs" => &ffs.to_string(),
+    );
 
-impl SrtInput {
-    pub fn new(url: String, timeout: u64, latency: u64, ffs: u64, passphrase: String) -> Self {
-        Self {
-            url,
-            timeout,
-            latency,
-            ffs,
-            passphrase,
-        }
+    if !passphrase.is_empty() {
+        options.set("passphrase", &passphrase);
     }
 
-    pub fn open_input(&mut self) -> Result<Input> {
-        let mut options = dict!(
-            "timeout" => &self.timeout.to_string(),
-            "latency" => &self.latency.to_string(),
-            "ffs" => &self.ffs.to_string(),
-        );
-
-        if !self.passphrase.is_empty() {
-            options.set("passphrase", &self.passphrase);
-        }
-
-        Ok(format::input_with_dictionary(&self.url, options)?)
-    }
+    Ok(format::input_with_dictionary(&url, options)?)
 }
