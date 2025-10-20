@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option csharp_namespace = "MediCloud.Application.Proto";
+
+package livestream;
+
+service Livestream {
+    rpc StartPullStream (StartPullStreamRequest) returns (StartPullStreamResponse);
+}
+
+message StartPullStreamRequest {
+    string live_id       = 1;
+    string url          = 2;
+    string passphrase   = 3;
+
+    uint64 timeout  = 4;
+    uint64 latency  = 5;
+    uint64 ffs      = 6;
+}
+
+message StartPullStreamResponse {
+    string live_id       = 1;
+    string url          = 2;
+    string path         = 3;
+    string code         = 4;
+}

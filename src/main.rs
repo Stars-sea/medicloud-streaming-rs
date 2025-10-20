@@ -1,37 +1,35 @@
 extern crate ffmpeg_next as ffmpeg;
 
-mod core;
-mod messaging;
-mod settings;
-
 use anyhow::Result;
-use lapin::Connection;
 use log::info;
 use tokio;
+use tonic::transport::Server;
 
-use crate::messaging::{handlers, messages};
+use crate::livestream::livestream_server::LivestreamServer;
+
+mod core;
+mod services;
+mod settings;
+pub mod livestream {
+    tonic::include_proto!("livestream");
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
+    info!("Starting LiveStream server");
 
     ffmpeg::init()?;
+
     let settings = settings::Settings::from_file("./settings.json")?;
+    let livestream = services::livestream::LiveStreamService::default();
 
-    let conn = Connection::connect(
-        &settings.rabbitmq_url,
-        lapin::ConnectionProperties::default(),
-    )
-    .await?;
-    info!("RabbitMQ Connected");
+    info!("Server will listen on {}", settings.addr);
 
-    let stream_retrieved_queue =
-        messaging::add_typed_queue::<messages::StreamRetrievedResponse>(&conn).await?;
-
-    let pull_stream_cmd_consumer =
-        messaging::add_typed_consumer::<messages::PullStreamCommand>(&conn).await?;
-
-    handlers::pull_stream_command_consumer(pull_stream_cmd_consumer, stream_retrieved_queue).await;
+    Server::builder()
+        .add_service(LivestreamServer::new(livestream))
+        .serve(settings.addr.parse()?)
+        .await?;
 
     Ok(())
 }

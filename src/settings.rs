@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::fs;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Settings {
-    pub rabbitmq_url: String
+    pub addr: String,
 }
 
 impl Settings {
