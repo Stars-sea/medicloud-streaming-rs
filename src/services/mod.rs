@@ -1,1 +1,3 @@
-pub mod livestream;
+mod livestream;
+
+pub use crate::services::livestream::LiveStreamService;

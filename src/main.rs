@@ -6,11 +6,13 @@ use tokio;
 use tonic::transport::Server;
 
 use crate::livestream::livestream_server::LivestreamServer;
+use crate::persistence::minio::MinioClient;
 
 mod core;
+mod persistence;
 mod services;
 mod settings;
-pub mod livestream {
+mod livestream {
     tonic::include_proto!("livestream");
 }
 
@@ -22,13 +24,23 @@ async fn main() -> Result<()> {
     ffmpeg::init()?;
 
     let settings = settings::Settings::from_file("./settings.json")?;
-    let livestream = services::livestream::LiveStreamService::default();
 
-    info!("Server will listen on {}", settings.addr);
+    let minio_client = MinioClient::create(
+        settings.grpc_addr.as_str(),
+        settings.minio_access_key.as_str(),
+        settings.minio_secret_key.as_str(),
+        settings.minio_bucket.as_str(),
+    )
+    .await?;
+
+    let livestream =
+        services::LiveStreamService::new(minio_client, settings.m3u8_cache_dir.as_str());
+
+    info!("Server will listen on {}", settings.grpc_addr);
 
     Server::builder()
         .add_service(LivestreamServer::new(livestream))
-        .serve(settings.addr.parse()?)
+        .serve(settings.grpc_addr.parse()?)
         .await?;
 
     Ok(())

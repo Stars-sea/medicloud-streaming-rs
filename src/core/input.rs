@@ -7,11 +7,11 @@ use ffmpeg::{
 };
 
 pub fn open_srt_input(
-    url: String,
+    url: &str,
     timeout: u64,
     latency: u64,
     ffs: u64,
-    passphrase: String,
+    passphrase: &str,
 ) -> Result<Input> {
     let mut options = dict!(
         "timeout" => &timeout.to_string(),
@@ -20,8 +20,8 @@ pub fn open_srt_input(
     );
 
     if !passphrase.is_empty() {
-        options.set("passphrase", &passphrase);
+        options.set("passphrase", passphrase);
     }
 
-    Ok(format::input_with_dictionary(&url, options)?)
+    Ok(format::input_with_dictionary(url, options)?)
 }

@@ -1,3 +1,10 @@
 {
-    "addr": "[::1]:50051"
+    "grpc_addr": "[::1]:50051",
+  
+    "m3u8_cache_dir": "./cache",
+
+    "minio_endpoint": "localhost:9000",
+    "minio_access_key": "QUMX91W7BQRTQF9Q363A",
+    "minio_secret_key": "kSYxLiCKnHRcWtSQSrCLGfZho6YNvUKYiFy3anBx",
+    "minio_bucket": "videos"
 }
