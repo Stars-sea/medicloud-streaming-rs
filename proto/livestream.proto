@@ -14,7 +14,9 @@ message StartPullStreamRequest {
   string passphrase = 3;
 
   uint64 connect_timeout = 4;
-  uint64 latency = 5;
+  uint64 listen_timeout = 5;
+  uint64 timeout = 6;
+  uint64 latency = 7;
 }
 
 message StartPullStreamResponse {

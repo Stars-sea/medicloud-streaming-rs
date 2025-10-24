@@ -1,17 +1,20 @@
-use anyhow::Result;
-use ffmpeg::format::context::{Input, Output};
-use log::{debug, info, warn};
-use notify::{Event, Watcher};
-use std::path::{Path, PathBuf};
-use tokio::fs;
-use tokio::sync::{broadcast, mpsc};
-use tonic::{Request, Response, Status};
-
 use crate::core::{input, output};
 use crate::livestream::livestream_server::Livestream;
 use crate::livestream::{StartPullStreamRequest, StartPullStreamResponse};
 use crate::persistence::minio::MinioClient;
 use crate::settings::HlsSettings;
+use anyhow::Result;
+use ffmpeg::format::context::{Input, Output};
+use log::{debug, info, warn};
+use notify::{Event, Watcher};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::fs;
+use tokio::sync::{broadcast, mpsc};
+use tokio_util::time::DelayQueue;
+use tonic::codegen::tokio_stream::StreamExt;
+use tonic::{Request, Response, Status};
 
 fn srt2hls(
     tx: broadcast::Sender<String>,
@@ -20,15 +23,19 @@ fn srt2hls(
     mut output: Output,
 ) -> Result<()> {
     output.write_header()?;
-    for (stream, mut packet) in input.packets() {
-        match output.stream(stream.index()) {
-            Some(stream) => {
-                let output_stream = output.stream(stream.index()).unwrap();
-                packet.rescale_ts(stream.time_base(), output_stream.time_base());
-                packet.write(&mut output)?;
+
+    while let Some((istream, mut packet)) = input.packets().next() {
+        match output.stream(istream.index()) {
+            Some(ostream) => {
+                packet.rescale_ts(istream.time_base(), ostream.time_base());
+                packet.write(&mut output).expect("failed to write packet");
             }
             None => {
-                warn!("Failed to fetch packet (LiveId: {})", live_id)
+                warn!(
+                    "Output stream not found for index {} (LiveId: {})",
+                    istream.index(),
+                    live_id
+                );
             }
         }
     }
@@ -44,6 +51,9 @@ async fn upload_hls_to_minio(
     mut task_finish_broadcast_rx: broadcast::Receiver<String>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let mut delay_queue = DelayQueue::new();
+    let mut file_keys = HashMap::new();
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         if let Ok(event) = res {
@@ -64,17 +74,28 @@ async fn upload_hls_to_minio(
     loop {
         tokio::select! {
             Some((path, filename)) = rx.recv() => {
+                if let Some(key) = file_keys.remove(&path) {
+                    delay_queue.remove(&key);
+                }
+
+                let delay_key = delay_queue.insert((path.clone(), filename), Duration::from_secs(5));
+                file_keys.insert(path, delay_key);
+            }
+            Some(expired) = delay_queue.next() => {
+                let (path, filename) = expired.into_inner();
+                file_keys.remove(&path);
+
                 let storage_key = format!("{}/{}", live_id, filename);
                 let upload_resp = minio_client
                     .upload_file(storage_key.as_str(), fs::canonicalize(&path).await?.as_path())
                     .await;
                 if let Err(e) = upload_resp {
-                    warn!("Failed to upload file: {:?}", e);
+                    warn!("Upload failed for {}: {:?}", path.display(), e);
                 }
             },
             Ok(finish_live_id) = task_finish_broadcast_rx.recv() => {
                 if finish_live_id == live_id {
-                    debug!("Stream {} finished, exiting MinIO sync task", live_id);
+                    debug!("Stream {} finished, exiting upload task", live_id);
                     return Ok(());
                 }
             }
@@ -115,7 +136,7 @@ impl LiveStreamService {
         let hls_settings = self.hls_settings.clone();
         let request_clone = request.clone();
         let tx = self.task_finish_broadcast_tx.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let input_url = format!("{}?mode=listener", &request_clone.url);
             info!(
                 "Waiting for srt connection (LiveId: {}): {}",
@@ -125,6 +146,8 @@ impl LiveStreamService {
             let input = input::open_srt_input(
                 input_url.as_str(),
                 request_clone.connect_timeout,
+                request_clone.listen_timeout,
+                request_clone.timeout,
                 request_clone.latency,
                 request_clone.passphrase.as_str(),
             )?;
@@ -142,8 +165,7 @@ impl LiveStreamService {
             );
 
             let live_id = request_clone.live_id.clone();
-            let result =
-                tokio::task::spawn_blocking(move || srt2hls(tx, &live_id, input, output)).await?;
+            let result = srt2hls(tx, &live_id, input, output);
             info!("Stream terminated (LiveId: {})", request_clone.live_id);
             result
         });

@@ -38,7 +38,6 @@ impl MinioClient {
     }
 
     pub async fn upload_file(&self, filename: &str, path: &Path) -> Result<()> {
-        debug!("Uploading {}", filename);
         self.client
             .put_object_content(self.bucket.as_str(), filename, ObjectContent::from(path))
             .send()
