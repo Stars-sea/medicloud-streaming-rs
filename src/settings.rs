@@ -2,13 +2,18 @@ use anyhow::{Context, Result};
 use std::fs;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct HlsSettings {
+    pub cache_dir: String,
+    pub segment_time: u32,
+    pub list_size: u32,
+    pub delete_segments: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Settings {
     pub grpc_addr: String,
-    
-    pub m3u8_cache_dir: String,
-    pub m3u8_segment_time: u32,
-    pub m3u8_list_size: u32,
-    pub m3u8_delete_segments: bool,
+
+    pub hls: HlsSettings,
 
     pub minio_endpoint: String,
     pub minio_access_key: String,

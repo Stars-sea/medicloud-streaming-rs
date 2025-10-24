@@ -22,11 +22,12 @@ async fn main() -> Result<()> {
     info!("Starting LiveStream server");
 
     ffmpeg::init()?;
+    ffmpeg::util::log::set_level(ffmpeg::log::Level::Quiet);
 
     let settings = settings::Settings::from_file("./settings.json")?;
 
     let minio_client = MinioClient::create(
-        settings.grpc_addr.as_str(),
+        settings.minio_endpoint.as_str(),
         settings.minio_access_key.as_str(),
         settings.minio_secret_key.as_str(),
         settings.minio_bucket.as_str(),
@@ -35,10 +36,7 @@ async fn main() -> Result<()> {
 
     let livestream = services::LiveStreamService::new(
         minio_client,
-        settings.m3u8_cache_dir.as_str(),
-        settings.m3u8_segment_time,
-        settings.m3u8_list_size,
-        settings.m3u8_delete_segments,
+        settings.hls
     );
 
     info!("Server will listen on {}", settings.grpc_addr);
