@@ -5,22 +5,21 @@ option csharp_namespace = "MediCloud.Application.Proto";
 package livestream;
 
 service Livestream {
-    rpc StartPullStream (StartPullStreamRequest) returns (StartPullStreamResponse);
+  rpc StartPullStream (StartPullStreamRequest) returns (StartPullStreamResponse);
 }
 
 message StartPullStreamRequest {
-    string live_id       = 1;
-    string url          = 2;
-    string passphrase   = 3;
+  string live_id = 1;
+  string url = 2;
+  string passphrase = 3;
 
-    uint64 timeout  = 4;
-    uint64 latency  = 5;
-    uint64 ffs      = 6;
+  uint64 connect_timeout = 4;
+  uint64 latency = 5;
 }
 
 message StartPullStreamResponse {
-    string live_id       = 1;
-    string url          = 2;
-    string path         = 3;
-    string code         = 4;
+  string live_id = 1;
+  string url = 2;
+  string path = 3;
+  string code = 4;
 }

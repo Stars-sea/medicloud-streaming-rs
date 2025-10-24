@@ -1,5 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use std::path::PathBuf;
 use anyhow::{Ok, Result};
 use ffmpeg::format::context::{Input, Output};
 use ffmpeg::format::output_as_with;
@@ -9,7 +10,7 @@ pub fn open_hls_output(
     segment_time: u32,
     list_size: u32,
     delete_segments: bool,
-    path: &str,
+    path: &PathBuf,
     input_ctx: &Input,
 ) -> Result<Output> {
     let mut options = dict!(

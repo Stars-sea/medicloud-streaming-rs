@@ -33,8 +33,13 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let livestream =
-        services::LiveStreamService::new(minio_client, settings.m3u8_cache_dir.as_str());
+    let livestream = services::LiveStreamService::new(
+        minio_client,
+        settings.m3u8_cache_dir.as_str(),
+        settings.m3u8_segment_time,
+        settings.m3u8_list_size,
+        settings.m3u8_delete_segments,
+    );
 
     info!("Server will listen on {}", settings.grpc_addr);
 
