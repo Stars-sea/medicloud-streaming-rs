@@ -1,103 +1,113 @@
-use crate::core::{input, output};
+use crate::core::input::SrtInputContext;
+use crate::core::output::TsOutputContext;
+use crate::core::packet::Packet;
 use crate::livestream::livestream_server::Livestream;
-use crate::livestream::{StartPullStreamRequest, StartPullStreamResponse};
+use crate::livestream::{
+    ListActiveStreamsRequest, ListActiveStreamsResponse, StartPullStreamRequest,
+    StartPullStreamResponse, StopPullStreamRequest, StopPullStreamResponse,
+};
 use crate::persistence::minio::MinioClient;
-use crate::settings::HlsSettings;
+use crate::settings::SegmentConfig;
 use anyhow::Result;
-use ffmpeg::format::context::{Input, Output};
-use log::{debug, info, warn};
-use notify::{Event, Watcher};
-use std::collections::HashMap;
+use ffmpeg_sys_next::AV_PKT_FLAG_KEY;
+use log::{info, warn};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{broadcast, mpsc};
-use tokio_util::time::DelayQueue;
-use tonic::codegen::tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
-fn srt2hls(
-    tx: broadcast::Sender<String>,
-    live_id: &str,
-    mut input: Input,
-    mut output: Output,
-) -> Result<()> {
-    output.write_header()?;
+#[derive(Clone, Debug)]
+struct OnSegmentComplete {
+    live_id: String,
+    segment_id: String,
+    path: PathBuf,
+}
 
-    while let Some((istream, mut packet)) = input.packets().next() {
-        match output.stream(istream.index()) {
-            Some(ostream) => {
-                packet.rescale_ts(istream.time_base(), ostream.time_base());
-                packet.write(&mut output).expect("failed to write packet");
-            }
-            None => {
-                warn!(
-                    "Output stream not found for index {} (LiveId: {})",
-                    istream.index(),
-                    live_id
-                );
-            }
+async fn pull_srt_loop(
+    tx: mpsc::UnboundedSender<OnSegmentComplete>,
+    mut stop_rx: broadcast::Receiver<String>,
+    live_id: &str,
+    srt_url: &str,
+    config: SegmentConfig,
+) -> Result<()> {
+    let input_ctx = SrtInputContext::open(srt_url)?;
+    let cache_dir = PathBuf::from(config.cache_dir).join(live_id);
+
+    let mut output_ctx: Option<TsOutputContext> = None;
+    let mut last_segment_start_time = 0;
+
+    loop {
+        if let Ok(id) = stop_rx.try_recv()
+            && id == live_id
+        {
+            break;
         }
+
+        let packet = Packet::alloc()?;
+        if packet.read(&input_ctx)? == 0 {
+            break;
+        }
+
+        let current_time_ms = packet.current_time_ms();
+        let is_key_frame = packet.has_flag(AV_PKT_FLAG_KEY);
+        if current_time_ms - last_segment_start_time > config.segment_time as i64 * 1000
+            && is_key_frame
+            && let Some(ctx) = output_ctx.as_mut()
+        {
+            ctx.release_and_close()?;
+
+            let path = ctx.path().clone();
+            tx.send(OnSegmentComplete {
+                live_id: live_id.to_string(),
+                segment_id: path.file_name().unwrap().display().to_string(),
+                path,
+            })?;
+            last_segment_start_time = current_time_ms;
+            output_ctx = None;
+        }
+
+        if output_ctx.is_none() {
+            output_ctx = Some(TsOutputContext::create_segment(&cache_dir, &input_ctx)?);
+        }
+
+        packet.write(output_ctx.as_ref().unwrap())?;
     }
-    output.write_trailer()?;
-    tx.send(live_id.into())?;
+
+    if let Some(ctx) = output_ctx.as_mut() {
+        ctx.release_and_close()?;
+
+        let path = ctx.path().clone();
+        tx.send(OnSegmentComplete {
+            live_id: live_id.to_string(),
+            segment_id: path.file_name().unwrap().display().to_string(),
+            path,
+        })?;
+    }
+
     Ok(())
 }
 
-async fn upload_hls_to_minio(
-    live_cache_dir: PathBuf,
-    live_id: String,
-    minio_client: MinioClient,
-    mut task_finish_broadcast_rx: broadcast::Receiver<String>,
+async fn upload_to_minio(
+    mut rx: mpsc::UnboundedReceiver<OnSegmentComplete>,
+    minio: MinioClient,
 ) -> Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-
-    let mut delay_queue = DelayQueue::new();
-    let mut file_keys = HashMap::new();
-
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if let Ok(event) = res {
-            if !event.kind.is_modify() && !event.kind.is_create() {
-                return;
-            }
-            for path in event.paths {
-                let filename = String::from(path.file_name().unwrap().to_str().unwrap());
-                if !filename.ends_with(".ts") && !filename.ends_with(".m3u8") {
-                    continue;
-                }
-                tx.send((path, filename)).expect("Failed to send path");
-            }
-        }
-    })?;
-    watcher.watch(&live_cache_dir, notify::RecursiveMode::NonRecursive)?;
-
     loop {
-        tokio::select! {
-            Some((path, filename)) = rx.recv() => {
-                if let Some(key) = file_keys.remove(&path) {
-                    delay_queue.remove(&key);
-                }
+        if let Some(segment_info) = rx.recv().await {
+            let OnSegmentComplete {
+                live_id,
+                segment_id,
+                path,
+            } = segment_info;
 
-                let delay_key = delay_queue.insert((path.clone(), filename), Duration::from_secs(5));
-                file_keys.insert(path, delay_key);
-            }
-            Some(expired) = delay_queue.next() => {
-                let (path, filename) = expired.into_inner();
-                file_keys.remove(&path);
-
-                let storage_key = format!("{}/{}", live_id, filename);
-                let upload_resp = minio_client
-                    .upload_file(storage_key.as_str(), fs::canonicalize(&path).await?.as_path())
-                    .await;
-                if let Err(e) = upload_resp {
-                    warn!("Upload failed for {}: {:?}", path.display(), e);
-                }
-            },
-            Ok(finish_live_id) = task_finish_broadcast_rx.recv() => {
-                if finish_live_id == live_id {
-                    debug!("Stream {} finished, exiting upload task", live_id);
-                    return Ok(());
-                }
+            let storage_key = format!("{}/{}", live_id, segment_id);
+            let upload_resp = minio
+                .upload_file(
+                    storage_key.as_str(),
+                    fs::canonicalize(&path).await?.as_path(),
+                )
+                .await;
+            if let Err(e) = upload_resp {
+                warn!("Upload failed for {}: {:?}", path.display(), e);
             }
         }
     }
@@ -105,23 +115,34 @@ async fn upload_hls_to_minio(
 
 #[derive(Debug)]
 pub struct LiveStreamService {
-    minio_client: MinioClient,
-    hls_settings: HlsSettings,
+    // minio_client: MinioClient,
+    segment_config: SegmentConfig,
+    segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
     task_finish_broadcast_tx: broadcast::Sender<String>,
+
+    stop_stream_broadcast_tx: broadcast::Sender<String>,
 }
 
 impl LiveStreamService {
-    pub fn new(minio_client: MinioClient, hls_settings: HlsSettings) -> Self {
-        let (tx, _) = broadcast::channel::<String>(16);
+    pub fn new(minio_client: MinioClient, segment_config: SegmentConfig) -> Self {
+        let (task_finish_broadcast_tx, _) = broadcast::channel::<String>(16);
+        let (stop_stream_broadcast_tx, _) = broadcast::channel::<String>(16);
+        let (segment_complete_tx, segment_complete_rx) =
+            mpsc::unbounded_channel::<OnSegmentComplete>();
+
+        tokio::spawn(upload_to_minio(segment_complete_rx, minio_client));
+
         Self {
-            minio_client,
-            hls_settings,
-            task_finish_broadcast_tx: tx,
+            // minio_client,
+            segment_config,
+            segment_complete_tx,
+            task_finish_broadcast_tx,
+            stop_stream_broadcast_tx,
         }
     }
 
     fn live_cache_dir(&self, live_id: &str) -> PathBuf {
-        Path::new(self.hls_settings.cache_dir.as_str()).join(live_id)
+        Path::new(self.segment_config.cache_dir.as_str()).join(live_id)
     }
 
     async fn pull_stream(
@@ -129,62 +150,34 @@ impl LiveStreamService {
         request: StartPullStreamRequest,
     ) -> Result<StartPullStreamResponse> {
         let live_cache_dir = self.live_cache_dir(request.live_id.as_str());
-        let m3u8_path = live_cache_dir.join("index.m3u8");
         std::fs::create_dir_all(live_cache_dir)?;
 
-        let m3u8_path_clone = m3u8_path.clone();
-        let hls_settings = self.hls_settings.clone();
-        let request_clone = request.clone();
-        let tx = self.task_finish_broadcast_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let input_url = format!("{}?mode=listener", &request_clone.url);
-            info!(
-                "Waiting for srt connection (LiveId: {}): {}",
-                request_clone.live_id, input_url
-            );
+        let input_url = format!("{}?mode=listener", &request.url);
+        info!(
+            "Waiting for srt connection (LiveId: {}): {}",
+            request.live_id, input_url
+        );
 
-            let input = input::open_srt_input(
-                input_url.as_str(),
-                request_clone.connect_timeout,
-                request_clone.listen_timeout,
-                request_clone.timeout,
-                request_clone.latency,
-                request_clone.passphrase.as_str(),
-            )?;
-            let output = output::open_hls_output(
-                hls_settings.segment_time,
-                hls_settings.list_size,
-                hls_settings.delete_segments,
-                &m3u8_path_clone,
-                &input,
-            )?;
-
-            info!(
-                "Connected, start pulling stream (LiveId: {})",
-                request_clone.live_id
-            );
-
-            let live_id = request_clone.live_id.clone();
-            let result = srt2hls(tx, &live_id, input, output);
-            info!("Stream terminated (LiveId: {})", request_clone.live_id);
-            result
-        });
+        info!(
+            "Connected, start pulling stream (LiveId: {})",
+            request.live_id
+        );
 
         let live_id = request.live_id.clone();
-        let live_cache_dir = self.live_cache_dir(live_id.as_str());
-        let minio_client = self.minio_client.clone();
-        let broadcast_rx = self.task_finish_broadcast_tx.subscribe();
-        tokio::spawn(upload_hls_to_minio(
-            live_cache_dir,
-            live_id,
-            minio_client,
-            broadcast_rx,
-        ));
+        pull_srt_loop(
+            self.segment_complete_tx.clone(),
+            self.stop_stream_broadcast_tx.subscribe(),
+            &live_id,
+            &input_url,
+            self.segment_config.clone(),
+        )
+        .await?;
+        self.task_finish_broadcast_tx.send(live_id)?;
+        info!("Stream terminated (LiveId: {})", request.live_id);
 
         Ok(StartPullStreamResponse {
             live_id: request.live_id.clone(),
             url: format!("{}?mode=caller", request.url),
-            path: m3u8_path.display().to_string(), // TODO
             code: String::from(""),
         })
     }
@@ -201,5 +194,24 @@ impl Livestream for LiveStreamService {
             .await
             .map_err(|e| Status::from_error(e.into()))?;
         Ok(Response::new(resp))
+    }
+    async fn stop_pull_stream(
+        &self,
+        request: Request<StopPullStreamRequest>,
+    ) -> Result<Response<StopPullStreamResponse>, Status> {
+        match self
+            .stop_stream_broadcast_tx
+            .send(request.into_inner().live_id)
+        {
+            Ok(r) => Ok(Response::new(StopPullStreamResponse { is_success: r > 0 })),
+            Err(e) => Err(Status::from_error(e.into())),
+        }
+    }
+
+    async fn list_active_streams(
+        &self,
+        _: Request<ListActiveStreamsRequest>,
+    ) -> Result<Response<ListActiveStreamsResponse>, Status> {
+        todo!()
     }
 }

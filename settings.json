@@ -1,10 +1,8 @@
 {
   "grpc_addr": "0.0.0.0:50051",
-  "hls": {
+  "segment": {
     "cache_dir": "./cache",
-    "segment_time": 10,
-    "list_size": 0,
-    "delete_segments": true
+    "segment_time": 10
   },
   "minio_endpoint": "http://localhost:9000",
   "minio_access_key": "QUMX91W7BQRTQF9Q363A",

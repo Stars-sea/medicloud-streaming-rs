@@ -1,36 +1,156 @@
-extern crate ffmpeg_next as ffmpeg;
-
+use crate::core::context::{Context, ffmpeg_error};
+use crate::core::input::SrtInputContext;
+use anyhow::{Result, anyhow};
+use ffmpeg_sys_next::*;
+use std::ffi::{CString, c_int};
 use std::path::PathBuf;
-use anyhow::{Ok, Result};
-use ffmpeg::format::context::{Input, Output};
-use ffmpeg::format::output_as_with;
-use ffmpeg::{codec, dict};
+use std::ptr::null_mut;
 
-pub fn open_hls_output(
-    segment_time: u32,
-    list_size: u32,
-    delete_segments: bool,
-    path: &PathBuf,
-    input_ctx: &Input,
-) -> Result<Output> {
-    let mut options = dict!(
-        "hls_time" => &segment_time.to_string(),
-        "hls_list_size" => &list_size.to_string(),
-        "hls_segment_filename" => "segment_%03d.ts",
-    );
-    if delete_segments {
-        options.set("hls_flags", "delete_segments");
+pub struct TsOutputContext {
+    ctx: *mut AVFormatContext,
+    path: PathBuf,
+}
+
+impl TsOutputContext {
+    fn path_to_cstring(path: &PathBuf) -> Result<CString> {
+        Ok(CString::new(path.canonicalize()?.display().to_string())?)
     }
 
-    let mut output = output_as_with(path, "hls", options)?;
-    input_ctx.streams().for_each(|stream| {
-        let stream_ctx = codec::Context::from_parameters(stream.parameters())
-            .expect("Failed to create codec ctx");
+    fn alloc_output_ctx(path: &PathBuf) -> Result<*mut AVFormatContext> {
+        let mut ctx: *mut AVFormatContext = null_mut();
+        let c_path = Self::path_to_cstring(path)?;
 
-        output
-            .add_stream_with(&stream_ctx)
-            .expect("Failed to add output stream");
-    });
+        let ret = unsafe {
+            avformat_alloc_output_context2(&mut ctx, null_mut(), null_mut(), c_path.as_ptr())
+        };
+        if ret < 0 {
+            Err(anyhow!(
+                "Failed allocate output context: {}",
+                ffmpeg_error(ret)
+            ))
+        } else {
+            Ok(ctx)
+        }
+    }
 
-    Ok(output)
+    fn copy_parameters(ctx_ptr: *mut AVFormatContext, input_ctx: &SrtInputContext) -> Result<()> {
+        for i in 0..input_ctx.nb_streams() {
+            let in_stream = input_ctx.stream(i).unwrap();
+            let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
+            if out_stream.is_null() {
+                unsafe { avformat_free_context(ctx_ptr) };
+                return Err(anyhow!("Failed to allocate output stream"));
+            }
+
+            let ret =
+                unsafe { avcodec_parameters_copy((*out_stream).codecpar, (**in_stream).codecpar) };
+            if ret < 0 {
+                unsafe { avformat_free_context(ctx_ptr) };
+                return Err(anyhow!(
+                    "Failed to copy streams parameters: {}",
+                    ffmpeg_error(ret)
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn open_file(path: &PathBuf, flags: c_int) -> Result<*mut AVIOContext> {
+        let mut pb: *mut AVIOContext = null_mut();
+        let c_path = Self::path_to_cstring(&path)?;
+
+        let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
+        if ret < 0 {
+            Err(anyhow!("Failed to open output file: {}", ffmpeg_error(ret)))
+        } else {
+            Ok(pb)
+        }
+    }
+
+    fn write_header(ctx_ptr: *mut AVFormatContext) -> Result<()> {
+        let ret = unsafe { avformat_write_header(ctx_ptr, null_mut()) };
+        if ret < 0 {
+            unsafe {
+                avio_closep(&mut (*ctx_ptr).pb);
+                avformat_free_context(ctx_ptr);
+            }
+            Err(anyhow!("Failed to write header: {}", ffmpeg_error(ret)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
+        let filename = format!("segment_{}.ts", chrono::Utc::now().timestamp());
+        let path = tmp_dir.join(&filename);
+
+        // Alloc output AVFormatContext
+        let output_ctx = Self::alloc_output_ctx(&path)?;
+
+        // Copy parameters of streams
+        Self::copy_parameters(output_ctx, &input_ctx)?;
+
+        // Open file
+        if unsafe { (*output_ctx).flags & AVFMT_NOFILE == 0 } {
+            if let Err(e) = Self::open_file(&path, AVIO_FLAG_WRITE) {
+                unsafe { avformat_free_context(output_ctx) };
+                return Err(e);
+            }
+        }
+
+        // Write header
+        Self::write_header(output_ctx)?;
+
+        Ok(Self {
+            ctx: output_ctx,
+            path,
+        })
+    }
+
+    pub fn release_and_close(&mut self) -> Result<()> {
+        if self.ctx.is_null() {
+            return Ok(());
+        }
+
+        let ret = unsafe { av_write_trailer(self.ctx) };
+
+        unsafe {
+            avio_close((*self.ctx).pb);
+            avio_closep(&mut (*self.ctx).pb);
+            avformat_free_context(self.ctx);
+        }
+
+        self.ctx = null_mut();
+
+        if ret < 0 {
+            Err(anyhow!("Failed to write trailer: {}", ffmpeg_error(ret)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl Context for TsOutputContext {
+    fn get_ctx(&self) -> *mut AVFormatContext {
+        self.ctx
+    }
+}
+
+impl Drop for TsOutputContext {
+    fn drop(&mut self) {
+        if self.ctx.is_null() {
+            return;
+        }
+        unsafe {
+            avio_close((*self.ctx).pb);
+            avio_closep(&mut (*self.ctx).pb);
+            avformat_free_context(self.ctx);
+        }
+        self.ctx = null_mut();
+    }
 }

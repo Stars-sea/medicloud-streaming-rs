@@ -1,30 +1,42 @@
-extern crate ffmpeg_next as ffmpeg;
+use crate::core::context::{Context, ffmpeg_error};
+use anyhow::{Result, anyhow};
+use ffmpeg_sys_next::*;
+use std::ptr::null_mut;
 
-use anyhow::Result;
-use ffmpeg::{
-    dict,
-    format::{self, context::Input},
-};
+#[derive(Debug)]
+pub struct SrtInputContext {
+    ctx: *mut AVFormatContext,
+}
 
-pub fn open_srt_input(
-    url: &str,
-    connect_timeout: u64,
-    listen_timeout: u64,
-    timeout: u64,
-    latency: u64,
-    passphrase: &str,
-) -> Result<Input> {
-    let mut options = dict!(
-        "connect_timeout" => &connect_timeout.to_string(),
-        "listen_timeout" => &listen_timeout.to_string(),
-        "timeout" => &timeout.to_string(),
-        "latency" => &latency.to_string(),
-    );
-
-    if !passphrase.is_empty() {
-        options.set("passphrase", passphrase);
-        // TODO: Set pbkeylen
+impl Context for SrtInputContext {
+    fn get_ctx(&self) -> *mut AVFormatContext {
+        self.ctx
     }
+}
 
-    Ok(format::input_with_dictionary(url, options)?)
+impl SrtInputContext {
+    pub fn open(path: &str) -> Result<Self> {
+        let mut ctx: *mut AVFormatContext = null_mut();
+        let c_url = std::ffi::CString::new(path)?;
+
+        let ret = unsafe { avformat_open_input(&mut ctx, c_url.as_ptr(), null_mut(), null_mut()) };
+        if ret < 0 {
+            return Err(anyhow!(ffmpeg_error(ret)));
+        }
+
+        let ret = unsafe { avformat_find_stream_info(ctx, null_mut()) };
+        if ret < 0 {
+            unsafe { avformat_close_input(&mut ctx) };
+            return Err(anyhow!(ffmpeg_error(ret)));
+        }
+
+        Ok(Self { ctx })
+    }
+}
+
+impl Drop for SrtInputContext {
+    fn drop(&mut self) {
+        unsafe { avformat_close_input(&mut self.ctx) };
+        self.ctx = null_mut();
+    }
 }

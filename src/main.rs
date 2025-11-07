@@ -1,7 +1,5 @@
-extern crate ffmpeg_next as ffmpeg;
-
 use anyhow::Result;
-use log::info;
+use log::{Level, info};
 use tokio;
 use tonic::transport::Server;
 
@@ -9,7 +7,9 @@ use crate::livestream::livestream_server::LivestreamServer;
 use crate::persistence::minio::MinioClient;
 
 mod core;
-mod persistence;
+mod persistence {
+    pub mod minio;
+}
 mod services;
 mod settings;
 mod livestream {
@@ -21,8 +21,8 @@ async fn main() -> Result<()> {
     env_logger::init();
     info!("Starting LiveStream server");
 
-    ffmpeg::init()?;
-    ffmpeg::util::log::set_level(ffmpeg::log::Level::Quiet);
+    core::set_log_level(Level::Trace);
+    core::init();
 
     let settings = settings::Settings::from_file("./settings.json")?;
 
@@ -34,10 +34,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let livestream = services::LiveStreamService::new(
-        minio_client,
-        settings.hls
-    );
+    let livestream = services::LiveStreamService::new(minio_client, settings.segment);
 
     info!("Server will listen on {}", settings.grpc_addr);
 
