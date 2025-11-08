@@ -45,12 +45,12 @@ impl OnSegmentComplete {
 async fn pull_srt_loop(
     tx: mpsc::UnboundedSender<OnSegmentComplete>,
     mut stop_rx: broadcast::Receiver<String>,
-    live_id: &str,
-    srt_url: &str,
+    live_id: String,
+    srt_url: String,
     config: SegmentConfig,
 ) -> Result<()> {
-    let input_ctx = SrtInputContext::open(srt_url)?;
-    let cache_dir = PathBuf::from(config.cache_dir).join(live_id);
+    let input_ctx = SrtInputContext::open(srt_url.as_str())?;
+    let cache_dir = PathBuf::from(config.cache_dir).join(live_id.clone());
 
     let segment_duration_ms = config.segment_time as i64 * 1000;
     let mut output_ctx: Option<TsOutputContext> = None;
@@ -78,6 +78,7 @@ async fn pull_srt_loop(
             output_ctx = Some(TsOutputContext::create_segment(&cache_dir, &input_ctx)?);
         }
 
+        packet.rescale_ts_for_ctx(&input_ctx, output_ctx.as_ref().unwrap());
         packet.write(output_ctx.as_ref().unwrap())?;
     }
 
@@ -158,27 +159,36 @@ impl LiveStreamService {
         let live_cache_dir = self.live_cache_dir(request.live_id.as_str());
         std::fs::create_dir_all(live_cache_dir)?;
 
-        let input_url = format!("{}?mode=listener", &request.url);
-
         info!(
             "Connected, start pulling stream (LiveId: {})",
             request.live_id
         );
-        pull_srt_loop(
-            self.segment_complete_tx.clone(),
-            self.stop_stream_broadcast_tx.subscribe(),
-            &request.live_id,
-            &input_url,
-            self.segment_config.clone(),
-        )
-        .await?;
+        let live_id = request.live_id.clone();
+        let input_url = format!("{}?mode=listener", &request.url);
+        let segment_complete_tx = self.segment_complete_tx.clone();
+        let task_finish_broadcast_tx = self.task_finish_broadcast_tx.clone();
+        let stop_stream_rx = self.stop_stream_broadcast_tx.subscribe();
+        let segment_config = self.segment_config.clone();
+        tokio::spawn(async move {
+            let result = pull_srt_loop(
+                segment_complete_tx,
+                stop_stream_rx,
+                live_id.clone(),
+                input_url,
+                segment_config,
+            )
+            .await;
 
-        info!("Stream terminated (LiveId: {})", request.live_id);
-        self.task_finish_broadcast_tx
-            .send(request.live_id.clone())?;
+            if let Err(e) = result {
+                warn!("Pull stream for {} failed: {:?}", live_id, e);
+                return;
+            }
+            info!("Stream terminated (LiveId: {})", live_id);
+            task_finish_broadcast_tx.send(live_id).unwrap();
+        });
 
         Ok(StartPullStreamResponse {
-            live_id: request.live_id.clone(),
+            live_id: request.live_id,
             url: format!("{}?mode=caller", request.url),
             code: String::from(""),
         })

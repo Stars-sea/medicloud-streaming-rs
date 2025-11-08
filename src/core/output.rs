@@ -5,6 +5,7 @@ use ffmpeg_sys_next::*;
 use std::ffi::{CString, c_int};
 use std::path::PathBuf;
 use std::ptr::null_mut;
+use std::str::FromStr;
 
 pub struct TsOutputContext {
     ctx: *mut AVFormatContext,
@@ -13,7 +14,7 @@ pub struct TsOutputContext {
 
 impl TsOutputContext {
     fn path_to_cstring(path: &PathBuf) -> Result<CString> {
-        Ok(CString::new(path.canonicalize()?.display().to_string())?)
+        Ok(CString::new(path.as_path().display().to_string())?)
     }
 
     fn alloc_output_ctx(path: &PathBuf) -> Result<*mut AVFormatContext> {
@@ -21,7 +22,12 @@ impl TsOutputContext {
         let c_path = Self::path_to_cstring(path)?;
 
         let ret = unsafe {
-            avformat_alloc_output_context2(&mut ctx, null_mut(), null_mut(), c_path.as_ptr())
+            avformat_alloc_output_context2(
+                &mut ctx,
+                null_mut(),
+                CString::from_str("mpegts")?.as_ptr(),
+                c_path.as_ptr(),
+            )
         };
         if ret < 0 {
             Err(anyhow!(
@@ -89,18 +95,25 @@ impl TsOutputContext {
         let output_ctx = Self::alloc_output_ctx(&path)?;
 
         // Copy parameters of streams
-        Self::copy_parameters(output_ctx, &input_ctx)?;
+        if let Err(e) = Self::copy_parameters(output_ctx, &input_ctx) {
+            unsafe { avformat_free_context(output_ctx) };
+            return Err(e);
+        }
 
         // Open file
-        if unsafe { (*output_ctx).flags & AVFMT_NOFILE == 0 } {
-            if let Err(e) = Self::open_file(&path, AVIO_FLAG_WRITE) {
+        match Self::open_file(&path, AVIO_FLAG_WRITE) {
+            Ok(pb) => unsafe { (*output_ctx).pb = pb },
+            Err(e) => {
                 unsafe { avformat_free_context(output_ctx) };
                 return Err(e);
             }
         }
 
         // Write header
-        Self::write_header(output_ctx)?;
+        if let Err(e) = Self::write_header(output_ctx) {
+            unsafe { avformat_free_context(output_ctx) };
+            return Err(e);
+        }
 
         Ok(Self {
             ctx: output_ctx,
@@ -116,7 +129,6 @@ impl TsOutputContext {
         let ret = unsafe { av_write_trailer(self.ctx) };
 
         unsafe {
-            avio_close((*self.ctx).pb);
             avio_closep(&mut (*self.ctx).pb);
             avformat_free_context(self.ctx);
         }
@@ -147,7 +159,6 @@ impl Drop for TsOutputContext {
             return;
         }
         unsafe {
-            avio_close((*self.ctx).pb);
             avio_closep(&mut (*self.ctx).pb);
             avformat_free_context(self.ctx);
         }

@@ -1,5 +1,5 @@
-use crate::core::context::{Context, ffmpeg_error};
-use anyhow::{Result, anyhow};
+use crate::core::context::{ffmpeg_error, Context};
+use anyhow::{anyhow, Result};
 use ffmpeg_sys_next::*;
 
 pub struct Packet {
@@ -28,6 +28,20 @@ impl Packet {
         unsafe { Ok((*self.packet).size) }
     }
 
+    pub fn rescale_ts(&self, original_time_base: AVRational, target_time_base: AVRational) {
+        unsafe { av_packet_rescale_ts(self.packet, original_time_base, target_time_base) }
+    }
+
+    pub fn rescale_ts_for_ctx(&self, in_ctx: &impl Context, out_ctx: &impl Context) {
+        let stream_idx = self.stream_idx() as u32;
+        unsafe {
+            self.rescale_ts(
+                (**in_ctx.stream(stream_idx).unwrap()).time_base,
+                (**out_ctx.stream(stream_idx).unwrap()).time_base,
+            )
+        }
+    }
+
     pub fn write(&self, ctx: &impl Context) -> Result<()> {
         if !ctx.available() {
             return Err(anyhow!("Context is not available"));
@@ -35,15 +49,18 @@ impl Packet {
 
         let ret = unsafe { av_interleaved_write_frame(ctx.get_ctx(), self.packet) };
         if ret < 0 {
-            Err(anyhow!("av_interleaved_write_frame failed: {}", ffmpeg_error(ret)))
+            Err(anyhow!(
+                "av_interleaved_write_frame failed: {}",
+                ffmpeg_error(ret)
+            ))
         } else {
             Ok(())
         }
     }
 
     #[allow(dead_code)]
-    pub fn stream_idx(&self) -> usize {
-        unsafe { (*self.packet).stream_index as usize }
+    pub fn stream_idx(&self) -> i32 {
+        unsafe { (*self.packet).stream_index as i32 }
     }
 
     pub fn timebase(&self) -> AVRational {
@@ -61,6 +78,13 @@ impl Packet {
     pub fn current_time_ms(&self) -> i64 {
         let AVRational { num, den } = self.timebase();
         (self.pts() as f64 * num as f64 / den as f64 * 1000.0) as i64
+    }
+}
+
+impl Clone for Packet {
+    fn clone(&self) -> Self {
+        let pkt_ptr = unsafe { av_packet_clone(self.packet) };
+        Self { packet: pkt_ptr }
     }
 }
 
