@@ -23,6 +23,25 @@ struct OnSegmentComplete {
     path: PathBuf,
 }
 
+impl OnSegmentComplete {
+    fn new(live_id: String, segment_id: String, path: PathBuf) -> Self {
+        Self {
+            live_id,
+            segment_id,
+            path,
+        }
+    }
+
+    fn from_ctx(live_id: String, ctx: &TsOutputContext) -> Self {
+        let path = ctx.path().clone();
+        OnSegmentComplete::new(
+            live_id.to_string(),
+            path.file_name().unwrap().display().to_string(),
+            path,
+        )
+    }
+}
+
 async fn pull_srt_loop(
     tx: mpsc::UnboundedSender<OnSegmentComplete>,
     mut stop_rx: broadcast::Receiver<String>,
@@ -33,35 +52,24 @@ async fn pull_srt_loop(
     let input_ctx = SrtInputContext::open(srt_url)?;
     let cache_dir = PathBuf::from(config.cache_dir).join(live_id);
 
+    let segment_duration_ms = config.segment_time as i64 * 1000;
     let mut output_ctx: Option<TsOutputContext> = None;
     let mut last_segment_start_time = 0;
 
-    loop {
-        if let Ok(id) = stop_rx.try_recv()
-            && id == live_id
-        {
-            break;
-        }
-
+    while !stop_rx.try_recv().is_ok_and(|id| id == live_id) {
         let packet = Packet::alloc()?;
         if packet.read(&input_ctx)? == 0 {
             break;
         }
 
         let current_time_ms = packet.current_time_ms();
-        let is_key_frame = packet.has_flag(AV_PKT_FLAG_KEY);
-        if current_time_ms - last_segment_start_time > config.segment_time as i64 * 1000
-            && is_key_frame
+        if current_time_ms - last_segment_start_time > segment_duration_ms
+            && packet.has_flag(AV_PKT_FLAG_KEY)
             && let Some(ctx) = output_ctx.as_mut()
         {
             ctx.release_and_close()?;
+            tx.send(OnSegmentComplete::from_ctx(live_id.to_string(), &ctx))?;
 
-            let path = ctx.path().clone();
-            tx.send(OnSegmentComplete {
-                live_id: live_id.to_string(),
-                segment_id: path.file_name().unwrap().display().to_string(),
-                path,
-            })?;
             last_segment_start_time = current_time_ms;
             output_ctx = None;
         }
@@ -75,13 +83,7 @@ async fn pull_srt_loop(
 
     if let Some(ctx) = output_ctx.as_mut() {
         ctx.release_and_close()?;
-
-        let path = ctx.path().clone();
-        tx.send(OnSegmentComplete {
-            live_id: live_id.to_string(),
-            segment_id: path.file_name().unwrap().display().to_string(),
-            path,
-        })?;
+        tx.send(OnSegmentComplete::from_ctx(live_id.to_string(), ctx))?;
     }
 
     Ok(())
@@ -92,23 +94,27 @@ async fn upload_to_minio(
     minio: MinioClient,
 ) -> Result<()> {
     loop {
-        if let Some(segment_info) = rx.recv().await {
-            let OnSegmentComplete {
-                live_id,
-                segment_id,
-                path,
-            } = segment_info;
+        let rx_content = rx.recv().await;
+        if rx_content.is_none() {
+            continue;
+        }
 
-            let storage_key = format!("{}/{}", live_id, segment_id);
-            let upload_resp = minio
-                .upload_file(
-                    storage_key.as_str(),
-                    fs::canonicalize(&path).await?.as_path(),
-                )
-                .await;
-            if let Err(e) = upload_resp {
-                warn!("Upload failed for {}: {:?}", path.display(), e);
-            }
+        let OnSegmentComplete {
+            live_id,
+            segment_id,
+            path,
+        } = rx_content.unwrap();
+
+        let storage_key = format!("{}/{}", live_id, segment_id);
+        let upload_resp = minio
+            .upload_file(
+                storage_key.as_str(),
+                fs::canonicalize(&path).await?.as_path(),
+            )
+            .await;
+
+        if let Err(e) = upload_resp {
+            warn!("Upload failed for {}: {:?}", path.display(), e);
         }
     }
 }
@@ -117,9 +123,9 @@ async fn upload_to_minio(
 pub struct LiveStreamService {
     // minio_client: MinioClient,
     segment_config: SegmentConfig,
+
     segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
     task_finish_broadcast_tx: broadcast::Sender<String>,
-
     stop_stream_broadcast_tx: broadcast::Sender<String>,
 }
 
@@ -153,27 +159,23 @@ impl LiveStreamService {
         std::fs::create_dir_all(live_cache_dir)?;
 
         let input_url = format!("{}?mode=listener", &request.url);
-        info!(
-            "Waiting for srt connection (LiveId: {}): {}",
-            request.live_id, input_url
-        );
 
         info!(
             "Connected, start pulling stream (LiveId: {})",
             request.live_id
         );
-
-        let live_id = request.live_id.clone();
         pull_srt_loop(
             self.segment_complete_tx.clone(),
             self.stop_stream_broadcast_tx.subscribe(),
-            &live_id,
+            &request.live_id,
             &input_url,
             self.segment_config.clone(),
         )
         .await?;
-        self.task_finish_broadcast_tx.send(live_id)?;
+
         info!("Stream terminated (LiveId: {})", request.live_id);
+        self.task_finish_broadcast_tx
+            .send(request.live_id.clone())?;
 
         Ok(StartPullStreamResponse {
             live_id: request.live_id.clone(),
@@ -199,13 +201,11 @@ impl Livestream for LiveStreamService {
         &self,
         request: Request<StopPullStreamRequest>,
     ) -> Result<Response<StopPullStreamResponse>, Status> {
-        match self
-            .stop_stream_broadcast_tx
-            .send(request.into_inner().live_id)
-        {
-            Ok(r) => Ok(Response::new(StopPullStreamResponse { is_success: r > 0 })),
-            Err(e) => Err(Status::from_error(e.into())),
-        }
+        let live_id = request.into_inner().live_id;
+        let resp = StopPullStreamResponse {
+            is_success: self.stop_stream_broadcast_tx.send(live_id).is_ok(),
+        };
+        Ok(Response::new(resp))
     }
 
     async fn list_active_streams(
