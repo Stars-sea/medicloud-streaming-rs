@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{Level, info};
+use log::{info};
 use tokio;
 use tonic::transport::Server;
 
@@ -21,7 +21,8 @@ async fn main() -> Result<()> {
     env_logger::init();
     info!("Starting LiveStream server");
 
-    core::set_log_level(Level::Trace);
+    // core::set_log_level(Level::Trace);
+    core::set_log_quiet();
     core::init();
 
     let settings = settings::Settings::from_file("./settings.json")?;

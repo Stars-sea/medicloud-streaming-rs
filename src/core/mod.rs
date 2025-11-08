@@ -6,6 +6,7 @@ pub mod input;
 pub mod output;
 pub mod packet;
 
+#[allow(dead_code)]
 pub fn set_log_level(level: Level) {
     let c_level = match level {
         Level::Error => AV_LOG_ERROR,
@@ -15,6 +16,10 @@ pub fn set_log_level(level: Level) {
         Level::Trace => AV_LOG_TRACE,
     };
     unsafe { av_log_set_level(c_level) }
+}
+
+pub fn set_log_quiet() {
+    unsafe { av_log_set_level(AV_LOG_QUIET) }
 }
 
 pub fn init() {

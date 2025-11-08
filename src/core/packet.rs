@@ -1,6 +1,7 @@
-use crate::core::context::{ffmpeg_error, Context};
-use anyhow::{anyhow, Result};
+use crate::core::context::{Context, ffmpeg_error};
+use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
+use log::debug;
 
 pub struct Packet {
     packet: *mut AVPacket,
@@ -26,6 +27,13 @@ impl Packet {
         }
 
         unsafe { Ok((*self.packet).size) }
+    }
+
+    pub fn read_safely(&self, ctx: &impl Context) -> i32 {
+        self.read(ctx).unwrap_or_else(|e| {
+            debug!("read_safely failed: {}", e);
+            0
+        })
     }
 
     pub fn rescale_ts(&self, original_time_base: AVRational, target_time_base: AVRational) {
@@ -58,7 +66,6 @@ impl Packet {
         }
     }
 
-    #[allow(dead_code)]
     pub fn stream_idx(&self) -> i32 {
         unsafe { (*self.packet).stream_index as i32 }
     }

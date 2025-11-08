@@ -58,7 +58,7 @@ async fn pull_srt_loop(
 
     while !stop_rx.try_recv().is_ok_and(|id| id == live_id) {
         let packet = Packet::alloc()?;
-        if packet.read(&input_ctx)? == 0 {
+        if packet.read_safely(&input_ctx) == 0 {
             break;
         }
 
@@ -105,6 +105,7 @@ async fn upload_to_minio(
             segment_id,
             path,
         } = rx_content.unwrap();
+        info!("Uploading file {}/{}", live_id, segment_id);
 
         let storage_key = format!("{}/{}", live_id, segment_id);
         let upload_resp = minio
@@ -122,17 +123,16 @@ async fn upload_to_minio(
 
 #[derive(Debug)]
 pub struct LiveStreamService {
-    // minio_client: MinioClient,
     segment_config: SegmentConfig,
 
     segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
-    task_finish_broadcast_tx: broadcast::Sender<String>,
+    // task_finish_broadcast_tx: broadcast::Sender<String>,
     stop_stream_broadcast_tx: broadcast::Sender<String>,
 }
 
 impl LiveStreamService {
     pub fn new(minio_client: MinioClient, segment_config: SegmentConfig) -> Self {
-        let (task_finish_broadcast_tx, _) = broadcast::channel::<String>(16);
+        // let (task_finish_broadcast_tx, _) = broadcast::channel::<String>(16);
         let (stop_stream_broadcast_tx, _) = broadcast::channel::<String>(16);
         let (segment_complete_tx, segment_complete_rx) =
             mpsc::unbounded_channel::<OnSegmentComplete>();
@@ -140,10 +140,9 @@ impl LiveStreamService {
         tokio::spawn(upload_to_minio(segment_complete_rx, minio_client));
 
         Self {
-            // minio_client,
             segment_config,
             segment_complete_tx,
-            task_finish_broadcast_tx,
+            // task_finish_broadcast_tx,
             stop_stream_broadcast_tx,
         }
     }
@@ -166,7 +165,7 @@ impl LiveStreamService {
         let live_id = request.live_id.clone();
         let input_url = format!("{}?mode=listener", &request.url);
         let segment_complete_tx = self.segment_complete_tx.clone();
-        let task_finish_broadcast_tx = self.task_finish_broadcast_tx.clone();
+        // let task_finish_broadcast_tx = self.task_finish_broadcast_tx.clone();
         let stop_stream_rx = self.stop_stream_broadcast_tx.subscribe();
         let segment_config = self.segment_config.clone();
         tokio::spawn(async move {
@@ -184,7 +183,7 @@ impl LiveStreamService {
                 return;
             }
             info!("Stream terminated (LiveId: {})", live_id);
-            task_finish_broadcast_tx.send(live_id).unwrap();
+            // task_finish_broadcast_tx.send(live_id);
         });
 
         Ok(StartPullStreamResponse {
