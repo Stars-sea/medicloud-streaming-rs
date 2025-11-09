@@ -52,9 +52,11 @@ async fn pull_srt_loop(
     let input_ctx = SrtInputContext::open(srt_url.as_str())?;
     let cache_dir = PathBuf::from(config.cache_dir).join(live_id.clone());
 
-    let segment_pts =
-        config.segment_time as f64 * input_ctx.video_stream().unwrap().time_base_f64();
-    let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx)?;
+    let mut segment_id: u64 = 1;
+    let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
+
+    let segment_duration = config.segment_time as f64;
+    let timebase = input_ctx.video_stream().unwrap().time_base_f64();
     let mut last_start_pts = 0;
 
     while !stop_rx.try_recv().is_ok_and(|id| id == live_id) {
@@ -65,8 +67,8 @@ async fn pull_srt_loop(
 
         let current_pts = packet.pts().unwrap_or(0);
         let current_stream = input_ctx.stream(packet.stream_idx()).unwrap();
-        if current_stream.is_video_stream() {
-            if current_pts - last_start_pts > segment_pts as i64 && packet.is_key_frame() {
+        if current_stream.is_video_stream() && packet.is_key_frame() {
+            if (current_pts - last_start_pts) as f64 * timebase > segment_duration {
                 output_ctx.release_and_close()?;
                 tx.send(OnSegmentComplete::from_ctx(
                     live_id.to_string(),
@@ -74,7 +76,8 @@ async fn pull_srt_loop(
                 ))?;
 
                 last_start_pts = current_pts;
-                output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx)?;
+                segment_id += 1;
+                output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
             }
         }
 

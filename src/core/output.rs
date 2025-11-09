@@ -119,8 +119,8 @@ impl TsOutputContext {
         })
     }
 
-    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
-        let filename = format!("segment_{}.ts", chrono::Utc::now().timestamp());
+    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext, segment_id: u64) -> Result<Self> {
+        let filename = format!("segment_{:04}.ts", segment_id);
         let path = tmp_dir.join(&filename);
         Self::create(&path, &input_ctx)
     }
