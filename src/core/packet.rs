@@ -41,13 +41,11 @@ impl Packet {
     }
 
     pub fn rescale_ts_for_ctx(&self, in_ctx: &impl Context, out_ctx: &impl Context) {
-        let stream_idx = self.stream_idx() as u32;
-        unsafe {
-            self.rescale_ts(
-                (**in_ctx.stream(stream_idx).unwrap()).time_base,
-                (**out_ctx.stream(stream_idx).unwrap()).time_base,
-            )
-        }
+        let stream_idx = self.stream_idx();
+        self.rescale_ts(
+            in_ctx.stream(stream_idx).unwrap().time_base(),
+            out_ctx.stream(stream_idx).unwrap().time_base(),
+        )
     }
 
     pub fn write(&self, ctx: &impl Context) -> Result<()> {
@@ -66,25 +64,25 @@ impl Packet {
         }
     }
 
-    pub fn stream_idx(&self) -> i32 {
-        unsafe { (*self.packet).stream_index as i32 }
+    pub fn stream_idx(&self) -> u32 {
+        unsafe { (*self.packet).stream_index as u32 }
     }
 
-    pub fn timebase(&self) -> AVRational {
-        unsafe { (*self.packet).time_base.clone() }
-    }
-
-    pub fn pts(&self) -> i64 {
-        unsafe { (*self.packet).pts }
+    pub fn pts(&self) -> Option<i64> {
+        let pts = unsafe { (*self.packet).pts };
+        if pts != AV_NOPTS_VALUE {
+            Some(pts)
+        } else {
+            None
+        }
     }
 
     pub fn has_flag(&self, flag: i32) -> bool {
         unsafe { (*self.packet).flags & flag != 0 }
     }
 
-    pub fn current_time_ms(&self) -> i64 {
-        let AVRational { num, den } = self.timebase();
-        (self.pts() as f64 * num as f64 / den as f64 * 1000.0) as i64
+    pub fn is_key_frame(&self) -> bool {
+        self.has_flag(AV_PKT_FLAG_KEY)
     }
 }
 

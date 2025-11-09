@@ -1,3 +1,4 @@
+use crate::core::stream::Stream;
 use ffmpeg_sys_next::*;
 use std::ffi::{CStr, c_int};
 
@@ -8,14 +9,15 @@ pub(crate) trait Context {
         unsafe { (*self.get_ctx()).nb_streams }
     }
 
-    fn stream(&self, id: u32) -> Option<*mut *mut AVStream> {
+    fn stream(&self, id: u32) -> Option<Stream> {
         if id < self.nb_streams() {
-            Some(unsafe { (*self.get_ctx()).streams.offset(id as isize) })
+            let ptr = unsafe { (*self.get_ctx()).streams.offset(id as isize) };
+            unsafe { Some(Stream::new(*ptr)) }
         } else {
             None
         }
     }
-    
+
     fn available(&self) -> bool {
         !self.get_ctx().is_null()
     }

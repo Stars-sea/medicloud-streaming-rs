@@ -5,6 +5,7 @@ pub mod context;
 pub mod input;
 pub mod output;
 pub mod packet;
+mod stream;
 
 #[allow(dead_code)]
 pub fn set_log_level(level: Level) {

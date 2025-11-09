@@ -2,6 +2,7 @@ use crate::core::context::{Context, ffmpeg_error};
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
 use std::ptr::null_mut;
+use crate::core::stream::Stream;
 
 #[derive(Debug)]
 pub struct SrtInputContext {
@@ -31,6 +32,16 @@ impl SrtInputContext {
         }
 
         Ok(Self { ctx })
+    }
+    
+    pub fn video_stream(&self) -> Option<Stream> {
+        for idx in 0..self.nb_streams() {
+            let stream = self.stream(idx);
+            if stream.map_or(false, |s| { s.is_video_stream() }) {
+                return stream;
+            }
+        }
+        None
     }
 }
 

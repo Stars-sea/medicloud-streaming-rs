@@ -48,8 +48,9 @@ impl TsOutputContext {
                 return Err(anyhow!("Failed to allocate output stream"));
             }
 
-            let ret =
-                unsafe { avcodec_parameters_copy((*out_stream).codecpar, (**in_stream).codecpar) };
+            let ret = unsafe {
+                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params())
+            };
             if ret < 0 {
                 unsafe { avformat_free_context(ctx_ptr) };
                 return Err(anyhow!(
@@ -87,10 +88,7 @@ impl TsOutputContext {
         }
     }
 
-    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
-        let filename = format!("segment_{}.ts", chrono::Utc::now().timestamp());
-        let path = tmp_dir.join(&filename);
-
+    pub fn create(path: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
         // Alloc output AVFormatContext
         let output_ctx = Self::alloc_output_ctx(&path)?;
 
@@ -117,8 +115,14 @@ impl TsOutputContext {
 
         Ok(Self {
             ctx: output_ctx,
-            path,
+            path: path.clone(),
         })
+    }
+
+    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
+        let filename = format!("segment_{}.ts", chrono::Utc::now().timestamp());
+        let path = tmp_dir.join(&filename);
+        Self::create(&path, &input_ctx)
     }
 
     pub fn release_and_close(&mut self) -> Result<()> {

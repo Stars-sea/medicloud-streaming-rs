@@ -1,3 +1,4 @@
+use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
 use crate::core::output::TsOutputContext;
 use crate::core::packet::Packet;
@@ -9,7 +10,6 @@ use crate::livestream::{
 use crate::persistence::minio::MinioClient;
 use crate::settings::SegmentConfig;
 use anyhow::Result;
-use ffmpeg_sys_next::AV_PKT_FLAG_KEY;
 use log::{info, warn};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -52,9 +52,10 @@ async fn pull_srt_loop(
     let input_ctx = SrtInputContext::open(srt_url.as_str())?;
     let cache_dir = PathBuf::from(config.cache_dir).join(live_id.clone());
 
-    let segment_duration_ms = config.segment_time as i64 * 1000;
-    let mut output_ctx: Option<TsOutputContext> = None;
-    let mut last_segment_start_time = 0;
+    let segment_pts =
+        config.segment_time as f64 * input_ctx.video_stream().unwrap().time_base_f64();
+    let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx)?;
+    let mut last_start_pts = 0;
 
     while !stop_rx.try_recv().is_ok_and(|id| id == live_id) {
         let packet = Packet::alloc()?;
@@ -62,30 +63,30 @@ async fn pull_srt_loop(
             break;
         }
 
-        let current_time_ms = packet.current_time_ms();
-        if current_time_ms - last_segment_start_time > segment_duration_ms
-            && packet.has_flag(AV_PKT_FLAG_KEY)
-            && let Some(ctx) = output_ctx.as_mut()
-        {
-            ctx.release_and_close()?;
-            tx.send(OnSegmentComplete::from_ctx(live_id.to_string(), &ctx))?;
+        let current_pts = packet.pts().unwrap_or(0);
+        let current_stream = input_ctx.stream(packet.stream_idx()).unwrap();
+        if current_stream.is_video_stream() {
+            if current_pts - last_start_pts > segment_pts as i64 && packet.is_key_frame() {
+                output_ctx.release_and_close()?;
+                tx.send(OnSegmentComplete::from_ctx(
+                    live_id.to_string(),
+                    &output_ctx,
+                ))?;
 
-            last_segment_start_time = current_time_ms;
-            output_ctx = None;
+                last_start_pts = current_pts;
+                output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx)?;
+            }
         }
 
-        if output_ctx.is_none() {
-            output_ctx = Some(TsOutputContext::create_segment(&cache_dir, &input_ctx)?);
-        }
-
-        packet.rescale_ts_for_ctx(&input_ctx, output_ctx.as_ref().unwrap());
-        packet.write(output_ctx.as_ref().unwrap())?;
+        packet.rescale_ts_for_ctx(&input_ctx, &output_ctx);
+        packet.write(&output_ctx)?;
     }
 
-    if let Some(ctx) = output_ctx.as_mut() {
-        ctx.release_and_close()?;
-        tx.send(OnSegmentComplete::from_ctx(live_id.to_string(), ctx))?;
-    }
+    output_ctx.release_and_close()?;
+    tx.send(OnSegmentComplete::from_ctx(
+        live_id.to_string(),
+        &output_ctx,
+    ))?;
 
     Ok(())
 }
