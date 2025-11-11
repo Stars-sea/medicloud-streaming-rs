@@ -10,7 +10,7 @@ use crate::livestream::{
 use crate::persistence::minio::MinioClient;
 use crate::settings::SegmentConfig;
 use anyhow::Result;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::{broadcast, mpsc};
@@ -42,8 +42,8 @@ impl OnSegmentComplete {
     }
 }
 
-async fn pull_srt_loop(
-    tx: mpsc::UnboundedSender<OnSegmentComplete>,
+fn pull_srt_loop(
+    segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
     mut stop_rx: broadcast::Receiver<String>,
     live_id: String,
     srt_url: String,
@@ -70,7 +70,7 @@ async fn pull_srt_loop(
         if current_stream.is_video_stream() && packet.is_key_frame() {
             if (current_pts - last_start_pts) as f64 * timebase > segment_duration {
                 output_ctx.release_and_close()?;
-                tx.send(OnSegmentComplete::from_ctx(
+                segment_complete_tx.send(OnSegmentComplete::from_ctx(
                     live_id.to_string(),
                     &output_ctx,
                 ))?;
@@ -86,7 +86,7 @@ async fn pull_srt_loop(
     }
 
     output_ctx.release_and_close()?;
-    tx.send(OnSegmentComplete::from_ctx(
+    segment_complete_tx.send(OnSegmentComplete::from_ctx(
         live_id.to_string(),
         &output_ctx,
     ))?;
@@ -109,7 +109,7 @@ async fn upload_to_minio(
             segment_id,
             path,
         } = rx_content.unwrap();
-        info!("Uploading file {}/{}", live_id, segment_id);
+        info!("Uploading file {}", path.display());
 
         let storage_key = format!("{}/{}", live_id, segment_id);
         let upload_resp = minio
@@ -130,7 +130,7 @@ pub struct LiveStreamService {
     segment_config: SegmentConfig,
 
     segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
-    // task_finish_broadcast_tx: broadcast::Sender<String>,
+    task_finish_broadcast_tx: broadcast::Sender<(String, Option<String>)>,
     stop_stream_broadcast_tx: broadcast::Sender<String>,
 }
 
@@ -172,15 +172,14 @@ impl LiveStreamService {
         // let task_finish_broadcast_tx = self.task_finish_broadcast_tx.clone();
         let stop_stream_rx = self.stop_stream_broadcast_tx.subscribe();
         let segment_config = self.segment_config.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let result = pull_srt_loop(
                 segment_complete_tx,
                 stop_stream_rx,
                 live_id.clone(),
                 input_url,
                 segment_config,
-            )
-            .await;
+            );
 
             if let Err(e) = result {
                 warn!("Pull stream for {} failed: {:?}", live_id, e);
