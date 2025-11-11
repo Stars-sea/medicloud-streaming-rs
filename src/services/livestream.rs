@@ -11,7 +11,7 @@ use crate::persistence::minio::MinioClient;
 use crate::settings::SegmentConfig;
 use anyhow::Result;
 use log::{debug, info, warn};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 use tokio::sync::{broadcast, mpsc};
 use tonic::{Request, Response, Status};
@@ -39,6 +39,23 @@ impl OnSegmentComplete {
             path.file_name().unwrap().display().to_string(),
             path,
         )
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OnStreamTerminate {
+    live_id: String,
+    error: Option<String>,
+    path: PathBuf,
+}
+
+impl OnStreamTerminate {
+    fn new(live_id: String, error: Option<String>, path: PathBuf) -> Self {
+        Self {
+            live_id,
+            error,
+            path,
+        }
     }
 }
 
@@ -94,7 +111,7 @@ fn pull_srt_loop(
     Ok(())
 }
 
-async fn upload_to_minio(
+async fn minio_uploader(
     mut rx: mpsc::UnboundedReceiver<OnSegmentComplete>,
     minio: MinioClient,
 ) -> Result<()> {
@@ -121,6 +138,40 @@ async fn upload_to_minio(
 
         if let Err(e) = upload_resp {
             warn!("Upload failed for {}: {:?}", path.display(), e);
+            continue;
+        }
+
+        debug!("Remove file {}", path.display());
+        if fs::remove_file(&path).await.is_err() {
+            warn!("Failed to remove file {}", path.display());
+        }
+    }
+}
+
+async fn stream_termination_handler(mut rx: broadcast::Receiver<OnStreamTerminate>) {
+    loop {
+        let OnStreamTerminate {
+            live_id: _live_id,
+            error: _error,
+            path,
+        } = rx.recv().await.unwrap();
+
+        let entries = fs::read_dir(&path).await.ok();
+        if entries.is_none() {
+            continue;
+        }
+
+        let mut entries = entries.unwrap();
+        let mut is_dir_empty = true;
+        while let Some(Some(entry)) = entries.next_entry().await.ok() {
+            let filename = entry.file_name();
+            if filename != "." && filename != ".." {
+                is_dir_empty = false;
+            }
+        }
+
+        if is_dir_empty && fs::remove_dir_all(&path).await.is_err() {
+            warn!("Failed to remove directory {}", path.display());
         }
     }
 }
@@ -130,37 +181,34 @@ pub struct LiveStreamService {
     segment_config: SegmentConfig,
 
     segment_complete_tx: mpsc::UnboundedSender<OnSegmentComplete>,
-    task_finish_broadcast_tx: broadcast::Sender<(String, Option<String>)>,
-    stop_stream_broadcast_tx: broadcast::Sender<String>,
+    task_finish_tx: broadcast::Sender<OnStreamTerminate>,
+    stop_stream_tx: broadcast::Sender<String>,
 }
 
 impl LiveStreamService {
     pub fn new(minio_client: MinioClient, segment_config: SegmentConfig) -> Self {
-        // let (task_finish_broadcast_tx, _) = broadcast::channel::<String>(16);
-        let (stop_stream_broadcast_tx, _) = broadcast::channel::<String>(16);
+        let (task_finish_tx, task_finish_rx) = broadcast::channel::<OnStreamTerminate>(16);
+        let (stop_stream_tx, _) = broadcast::channel::<String>(16);
         let (segment_complete_tx, segment_complete_rx) =
             mpsc::unbounded_channel::<OnSegmentComplete>();
 
-        tokio::spawn(upload_to_minio(segment_complete_rx, minio_client));
+        tokio::spawn(minio_uploader(segment_complete_rx, minio_client));
+        tokio::spawn(stream_termination_handler(task_finish_rx));
 
         Self {
             segment_config,
             segment_complete_tx,
-            // task_finish_broadcast_tx,
-            stop_stream_broadcast_tx,
+            task_finish_tx,
+            stop_stream_tx,
         }
-    }
-
-    fn live_cache_dir(&self, live_id: &str) -> PathBuf {
-        Path::new(self.segment_config.cache_dir.as_str()).join(live_id)
     }
 
     async fn pull_stream(
         &self,
         request: StartPullStreamRequest,
     ) -> Result<StartPullStreamResponse> {
-        let live_cache_dir = self.live_cache_dir(request.live_id.as_str());
-        std::fs::create_dir_all(live_cache_dir)?;
+        let live_cache_dir = PathBuf::from(&self.segment_config.cache_dir).join(&request.live_id);
+        fs::create_dir_all(&live_cache_dir).await?;
 
         info!(
             "Connected, start pulling stream (LiveId: {})",
@@ -169,8 +217,8 @@ impl LiveStreamService {
         let live_id = request.live_id.clone();
         let input_url = format!("{}?mode=listener", &request.url);
         let segment_complete_tx = self.segment_complete_tx.clone();
-        // let task_finish_broadcast_tx = self.task_finish_broadcast_tx.clone();
-        let stop_stream_rx = self.stop_stream_broadcast_tx.subscribe();
+        let task_finish_tx = self.task_finish_tx.clone();
+        let stop_stream_rx = self.stop_stream_tx.subscribe();
         let segment_config = self.segment_config.clone();
         tokio::task::spawn_blocking(move || {
             let result = pull_srt_loop(
@@ -181,12 +229,17 @@ impl LiveStreamService {
                 segment_config,
             );
 
-            if let Err(e) = result {
+            let error = if let Err(e) = result {
                 warn!("Pull stream for {} failed: {:?}", live_id, e);
-                return;
-            }
-            info!("Stream terminated (LiveId: {})", live_id);
-            // task_finish_broadcast_tx.send(live_id);
+                Some(e.to_string())
+            } else {
+                info!("Stream terminated (LiveId: {})", live_id);
+                None
+            };
+
+            task_finish_tx
+                .send(OnStreamTerminate::new(live_id, error, live_cache_dir))
+                .ok();
         });
 
         Ok(StartPullStreamResponse {
@@ -215,7 +268,7 @@ impl Livestream for LiveStreamService {
     ) -> Result<Response<StopPullStreamResponse>, Status> {
         let live_id = request.into_inner().live_id;
         let resp = StopPullStreamResponse {
-            is_success: self.stop_stream_broadcast_tx.send(live_id).is_ok(),
+            is_success: self.stop_stream_tx.send(live_id).is_ok(),
         };
         Ok(Response::new(resp))
     }
