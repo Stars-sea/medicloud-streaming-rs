@@ -10,9 +10,12 @@ mod core;
 mod persistence {
     pub mod minio;
 }
-mod services;
 mod settings;
 mod livestream {
+    pub mod events;
+    pub mod service;
+    mod pull_stream;
+    mod handlers;
     tonic::include_proto!("livestream");
 }
 
@@ -35,7 +38,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let livestream = services::LiveStreamService::new(minio_client, settings.segment);
+    let livestream = livestream::service::LiveStreamService::new(minio_client, settings.segment);
 
     info!("Server will listen on {}", settings.grpc_addr);
 
