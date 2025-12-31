@@ -10,6 +10,8 @@ service Livestream {
   rpc StopPullStream (StopPullStreamRequest) returns (StopPullStreamResponse);
 
   rpc ListActiveStreams (ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+
+  rpc GetStreamStatus (GetStreamStatusRequest) returns (GetStreamStatusResponse);
 }
 
 message StartPullStreamRequest {
@@ -37,4 +39,13 @@ message ListActiveStreamsRequest {
 
 message ListActiveStreamsResponse {
   repeated string live_ids = 1;
+}
+
+message GetStreamStatusRequest {
+  string live_id = 1;
+}
+
+message GetStreamStatusResponse {
+  string url = 1;
+  string code = 2;
 }

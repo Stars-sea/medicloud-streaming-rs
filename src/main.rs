@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::Result;
-use log::{info};
+use log::info;
 use tokio;
 use tonic::transport::Server;
 
-use crate::livestream::livestream_server::LivestreamServer;
+use crate::livestream::service::{LiveStreamService, LivestreamServer};
 use crate::persistence::minio::MinioClient;
 
 mod core;
@@ -13,10 +15,9 @@ mod persistence {
 mod settings;
 mod livestream {
     pub mod events;
-    pub mod service;
-    mod pull_stream;
     mod handlers;
-    tonic::include_proto!("livestream");
+    mod pull_stream;
+    pub mod service;
 }
 
 #[tokio::main]
@@ -38,7 +39,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let livestream = livestream::service::LiveStreamService::new(minio_client, settings.segment);
+    let livestream = Arc::new(LiveStreamService::new(minio_client, settings.segment));
 
     info!("Server will listen on {}", settings.grpc_addr);
 

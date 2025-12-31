@@ -1,9 +1,12 @@
+use super::events::{OnSegmentComplete, SegmentCompleteTx, StopStreamRx};
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
 use crate::core::output::TsOutputContext;
 use crate::core::packet::Packet;
-use crate::livestream::events::{OnSegmentComplete, SegmentCompleteTx, StopStreamRx};
+use crate::livestream::events::{OnStreamStarted, StreamStartedTx};
 use crate::settings::SegmentConfig;
+
+use anyhow::Result;
 use std::path::PathBuf;
 
 fn should_segment(
@@ -27,12 +30,13 @@ fn should_segment(
 }
 
 pub(super) fn pull_srt_loop(
+    start_tx: StreamStartedTx,
     segment_complete_tx: SegmentCompleteTx,
     mut stop_rx: StopStreamRx,
     live_id: String,
     srt_url: String,
     config: SegmentConfig,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let input_ctx = SrtInputContext::open(srt_url.as_str())?;
     let cache_dir = PathBuf::from(config.cache_dir).join(live_id.clone());
 
@@ -45,6 +49,11 @@ pub(super) fn pull_srt_loop(
         let packet = Packet::alloc()?;
         if packet.read_safely(&input_ctx) == 0 {
             break;
+        }
+
+        // Send stream started event on first segment
+        if segment_id == 1 {
+            start_tx.send(OnStreamStarted::new(live_id.clone()))?;
         }
 
         if should_segment(
