@@ -1,11 +1,4 @@
 {
-  "grpc_addr": "0.0.0.0:50051",
-  "segment": {
-    "cache_dir": "./cache",
-    "segment_time": 10
-  },
-  "minio_endpoint": "http://localhost:9000",
-  "minio_access_key": "QUMX91W7BQRTQF9Q363A",
-  "minio_secret_key": "kSYxLiCKnHRcWtSQSrCLGfZho6YNvUKYiFy3anBx",
-  "minio_bucket": "videos"
+  "cache_dir": "./cache",
+  "segment_time": 10
 }

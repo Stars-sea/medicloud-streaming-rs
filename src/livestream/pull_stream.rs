@@ -4,7 +4,7 @@ use crate::core::input::SrtInputContext;
 use crate::core::output::TsOutputContext;
 use crate::core::packet::Packet;
 use crate::livestream::events::{OnStreamStarted, StreamStartedTx};
-use crate::settings::SegmentConfig;
+use crate::settings::Settings;
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -33,12 +33,12 @@ pub(super) fn pull_srt_loop(
     start_tx: StreamStartedTx,
     segment_complete_tx: SegmentCompleteTx,
     mut stop_rx: StopStreamRx,
-    live_id: String,
-    srt_url: String,
-    config: SegmentConfig,
+    live_id: &str,
+    srt_url: &str,
+    config: Settings,
 ) -> Result<()> {
-    let input_ctx = SrtInputContext::open(srt_url.as_str())?;
-    let cache_dir = PathBuf::from(config.cache_dir).join(live_id.clone());
+    let input_ctx = SrtInputContext::open(srt_url)?;
+    let cache_dir = PathBuf::from(config.cache_dir).join(live_id);
 
     let mut segment_id: u64 = 1;
     let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -53,7 +53,7 @@ pub(super) fn pull_srt_loop(
 
         // Send stream started event on first segment
         if segment_id == 1 {
-            start_tx.send(OnStreamStarted::new(live_id.clone()))?;
+            start_tx.send(OnStreamStarted::new(live_id.to_string()))?;
         }
 
         if should_segment(
@@ -63,10 +63,7 @@ pub(super) fn pull_srt_loop(
             &mut last_start_pts,
         ) {
             output_ctx.release_and_close()?;
-            segment_complete_tx.send(OnSegmentComplete::from_ctx(
-                live_id.to_string(),
-                &output_ctx,
-            ))?;
+            segment_complete_tx.send(OnSegmentComplete::from_ctx(live_id, &output_ctx))?;
 
             segment_id += 1;
             output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -77,10 +74,7 @@ pub(super) fn pull_srt_loop(
     }
 
     output_ctx.release_and_close()?;
-    segment_complete_tx.send(OnSegmentComplete::from_ctx(
-        live_id.to_string(),
-        &output_ctx,
-    ))?;
+    segment_complete_tx.send(OnSegmentComplete::from_ctx(live_id, &output_ctx))?;
 
     Ok(())
 }

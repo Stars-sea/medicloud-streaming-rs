@@ -5,7 +5,7 @@ use super::handlers::*;
 use super::pull_stream::pull_srt_loop;
 
 use crate::persistence::minio::MinioClient;
-use crate::settings::SegmentConfig;
+use crate::settings::Settings;
 
 use anyhow::Result;
 use log::info;
@@ -36,7 +36,7 @@ struct StreamInfo {
 
 #[derive(Debug)]
 pub struct LiveStreamService {
-    segment_config: SegmentConfig,
+    segment_config: Settings,
 
     active_streams: RwLock<HashMap<String, StreamInfo>>,
 
@@ -47,7 +47,7 @@ pub struct LiveStreamService {
 }
 
 impl LiveStreamService {
-    pub fn new(minio_client: MinioClient, segment_config: SegmentConfig) -> Self {
+    pub fn new(minio_client: MinioClient, segment_config: Settings) -> Self {
         let (stream_terminate_tx, task_finish_rx) = OnStreamTerminate::channel(16);
         let (start_stream_tx, _) = OnStreamStarted::channel(16);
         let (stop_stream_tx, _) = OnStopStream::channel(16);
@@ -96,8 +96,8 @@ impl LiveStreamService {
             self.start_stream_tx.clone(),
             self.segment_complete_tx.clone(),
             self.stop_stream_tx.subscribe(),
-            live_id.clone(),
-            format!("{}?mode=listener", &request.url),
+            &live_id,
+            &format!("{}?mode=listener", &request.url),
             self.segment_config.clone(),
         );
 

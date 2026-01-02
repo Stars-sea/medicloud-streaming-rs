@@ -25,7 +25,7 @@ impl OnSegmentComplete {
         }
     }
 
-    pub fn from_ctx(live_id: String, ctx: &TsOutputContext) -> Self {
+    pub fn from_ctx(live_id: &str, ctx: &TsOutputContext) -> Self {
         let path = ctx.path().clone();
         OnSegmentComplete::new(
             live_id.to_string(),
