@@ -16,22 +16,13 @@ RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure Cargo mirrors
-ENV RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup
-ENV RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
-
-RUN mkdir -vp ${CARGO_HOME:-$HOME/.cargo} \
-    && cat << TOML | tee -a ${CARGO_HOME:-$HOME/.cargo}/config.toml
-[source.crates-io]
-replace-with = 'ustc'
-[source.mirror]
-registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
-[registries.mirror]
-index = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
-[source.ustc]
-registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
-[registries.ustc]
-index = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
-TOML
+RUN mkdir -p ~/.cargo && \
+    echo "[source.crates-io]" > ~/.cargo/config.toml && \
+    echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
+    echo "[source.tuna]" >> ~/.cargo/config.toml && \
+    echo "registry = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[registries.mirror]" >> ~/.cargo/config.toml && \
+    echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml
 
 WORKDIR /app
 COPY . ./
