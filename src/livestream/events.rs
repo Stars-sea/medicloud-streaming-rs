@@ -1,5 +1,7 @@
+#![allow(dead_code)]
+
 use crate::core::output::TsOutputContext;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Clone, Debug)]
@@ -17,9 +19,9 @@ impl OnSegmentComplete {
         mpsc::unbounded_channel()
     }
 
-    pub fn new(live_id: String, segment_id: String, path: PathBuf) -> Self {
+    pub fn new(live_id: &str, segment_id: String, path: PathBuf) -> Self {
         Self {
-            live_id,
+            live_id: live_id.to_string(),
             segment_id,
             path,
         }
@@ -28,7 +30,7 @@ impl OnSegmentComplete {
     pub fn from_ctx(live_id: &str, ctx: &TsOutputContext) -> Self {
         let path = ctx.path().clone();
         OnSegmentComplete::new(
-            live_id.to_string(),
+            live_id,
             path.file_name().unwrap().display().to_string(),
             path,
         )
@@ -60,8 +62,10 @@ impl OnStreamStarted {
         broadcast::channel::<OnStreamStarted>(capacity)
     }
 
-    pub fn new(live_id: String) -> Self {
-        Self { live_id }
+    pub fn new(live_id: &str) -> Self {
+        Self {
+            live_id: live_id.to_string(),
+        }
     }
 
     pub fn live_id(&self) -> &str {
@@ -84,11 +88,11 @@ impl OnStreamTerminate {
         broadcast::channel::<OnStreamTerminate>(capacity)
     }
 
-    pub fn new(live_id: String, error: Option<String>, path: PathBuf) -> Self {
+    pub fn new<T: AsRef<Path>>(live_id: &str, error: Option<String>, path: T) -> Self {
         Self {
-            live_id,
+            live_id: live_id.to_string(),
             error,
-            path,
+            path: PathBuf::from(path.as_ref()),
         }
     }
 
@@ -118,8 +122,10 @@ impl OnStopStream {
         broadcast::channel::<OnStopStream>(capacity)
     }
 
-    pub fn new(live_id: String) -> Self {
-        Self { live_id }
+    pub fn new(live_id: &str) -> Self {
+        Self {
+            live_id: live_id.to_string(),
+        }
     }
 
     pub fn live_id(&self) -> &str {

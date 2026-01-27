@@ -1,13 +1,14 @@
-use super::events::{OnSegmentComplete, SegmentCompleteTx, StopStreamRx};
+use super::events::{
+    OnSegmentComplete, OnStreamStarted, SegmentCompleteTx, StopStreamRx, StreamStartedTx,
+};
+use super::stream_info::StreamInfo;
+
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
 use crate::core::output::TsOutputContext;
 use crate::core::packet::Packet;
-use crate::livestream::events::{OnStreamStarted, StreamStartedTx};
-use crate::settings::Settings;
 
 use anyhow::Result;
-use std::path::PathBuf;
 
 fn should_segment(
     packet: &Packet,
@@ -33,12 +34,13 @@ pub(super) fn pull_srt_loop(
     start_tx: StreamStartedTx,
     segment_complete_tx: SegmentCompleteTx,
     mut stop_rx: StopStreamRx,
-    live_id: &str,
-    srt_url: &str,
-    config: Settings,
+    info: &StreamInfo,
 ) -> Result<()> {
-    let input_ctx = SrtInputContext::open(srt_url)?;
-    let cache_dir = PathBuf::from(config.cache_dir).join(live_id);
+    let live_id = info.live_id();
+    let cache_dir = info.cache_dir();
+    let segment_duration = info.segment_duration() as f64;
+
+    let input_ctx = SrtInputContext::open(&info.listener_url())?;
 
     let mut segment_id: u64 = 1;
     let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -53,17 +55,12 @@ pub(super) fn pull_srt_loop(
 
         // Send stream started event on first segment
         if segment_id == 1 {
-            start_tx.send(OnStreamStarted::new(live_id.to_string()))?;
+            start_tx.send(OnStreamStarted::new(live_id))?;
         }
 
-        if should_segment(
-            &packet,
-            &input_ctx,
-            config.segment_time as f64,
-            &mut last_start_pts,
-        ) {
+        if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
             output_ctx.release_and_close()?;
-            segment_complete_tx.send(OnSegmentComplete::from_ctx(live_id, &output_ctx))?;
+            segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))?;
 
             segment_id += 1;
             output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -74,7 +71,7 @@ pub(super) fn pull_srt_loop(
     }
 
     output_ctx.release_and_close()?;
-    segment_complete_tx.send(OnSegmentComplete::from_ctx(live_id, &output_ctx))?;
+    segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))?;
 
     Ok(())
 }

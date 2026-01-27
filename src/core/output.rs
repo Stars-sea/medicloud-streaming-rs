@@ -3,7 +3,7 @@ use crate::core::input::SrtInputContext;
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
 use std::ffi::{CString, c_int};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::FromStr;
 
@@ -119,9 +119,13 @@ impl TsOutputContext {
         })
     }
 
-    pub fn create_segment(tmp_dir: &PathBuf, input_ctx: &SrtInputContext, segment_id: u64) -> Result<Self> {
+    pub fn create_segment<T: AsRef<Path>>(
+        tmp_dir: T,
+        input_ctx: &SrtInputContext,
+        segment_id: u64,
+    ) -> Result<Self> {
         let filename = format!("segment_{:04}.ts", segment_id);
-        let path = tmp_dir.join(&filename);
+        let path = PathBuf::from(tmp_dir.as_ref()).join(&filename);
         Self::create(&path, &input_ctx)
     }
 

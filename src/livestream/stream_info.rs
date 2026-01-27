@@ -1,26 +1,32 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::settings::Settings;
 
 #[derive(Debug, Clone)]
 pub struct StreamInfo {
     live_id: String,
     port: u16,
 
-    cache_dir: PathBuf,
-
     passphrase: String,
+
+    cache_dir: PathBuf,
+    segment_duration: i32,
 }
 
 impl StreamInfo {
-    pub fn new(live_id: String, port: u16, cache_dir: PathBuf, passphrase: String) -> Self {
+    pub fn new(live_id: String, port: u16, passphrase: String, settings: &Settings) -> Self {
+        let cache_dir = PathBuf::from(&settings.cache_dir).join(&live_id);
+        let segment_duration = settings.segment_time;
         Self {
             live_id,
             port,
-            cache_dir,
             passphrase,
+            cache_dir,
+            segment_duration,
         }
     }
 
-    pub fn live_id(&self) -> &String {
+    pub fn live_id(&self) -> &str {
         &self.live_id
     }
 
@@ -28,12 +34,16 @@ impl StreamInfo {
         self.port
     }
 
-    pub fn cache_dir(&self) -> &PathBuf {
-        &self.cache_dir
+    pub fn passphrase(&self) -> &str {
+        &self.passphrase
     }
 
-    pub fn passphrase(&self) -> &String {
-        &self.passphrase
+    pub fn cache_dir(&self) -> &Path {
+        self.cache_dir.as_path()
+    }
+
+    pub fn segment_duration(&self) -> i32 {
+        self.segment_duration
     }
 
     pub fn listener_url(&self) -> String {

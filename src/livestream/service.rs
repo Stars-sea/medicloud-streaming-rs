@@ -9,13 +9,13 @@ use super::stream_info::StreamInfo;
 use crate::persistence::minio::MinioClient;
 use crate::settings::Settings;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use log::info;
 use log::warn;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -25,7 +25,7 @@ pub use super::grpc::livestream_server::LivestreamServer;
 
 #[derive(Debug)]
 pub struct LiveStreamService {
-    segment_config: Settings,
+    settings: Settings,
 
     port_allocator: PortAllocator,
     active_streams: RwLock<HashMap<String, StreamInfo>>,
@@ -37,7 +37,7 @@ pub struct LiveStreamService {
 }
 
 impl LiveStreamService {
-    pub fn new(minio_client: MinioClient, segment_config: Settings) -> Self {
+    pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
         let (stream_terminate_tx, task_finish_rx) = OnStreamTerminate::channel(16);
         let (start_stream_tx, _) = OnStreamStarted::channel(16);
         let (stop_stream_tx, _) = OnStopStream::channel(16);
@@ -47,14 +47,14 @@ impl LiveStreamService {
         tokio::spawn(stream_termination_handler(task_finish_rx));
 
         let port_allocator = {
-            let (start_port, end_port) = segment_config
+            let (start_port, end_port) = settings
                 .srt_port_range()
                 .expect("Invalid SRT port range in settings");
             PortAllocator::new(start_port, end_port)
         };
 
         Self {
-            segment_config,
+            settings,
             port_allocator,
             active_streams: RwLock::new(HashMap::new()),
             segment_complete_tx,
@@ -80,17 +80,18 @@ impl LiveStreamService {
     ) -> Result<()> {
         let live_id = request.live_id;
 
-        let live_cache_dir = PathBuf::from(&self.segment_config.cache_dir).join(&live_id);
-        fs::create_dir_all(&live_cache_dir).await?;
-
         let stream_info = StreamInfo::new(
             live_id.clone(),
             port,
-            live_cache_dir.clone(),
             request.passphrase.clone(),
+            &self.settings,
         );
+        fs::create_dir_all(stream_info.cache_dir()).await?;
 
-        info!("Connected, start pulling stream (LiveId: {})", live_id);
+        info!(
+            "Ready to pull stream at port {} (LiveId: {})",
+            port, live_id
+        );
         self.active_streams
             .write()
             .await
@@ -100,11 +101,10 @@ impl LiveStreamService {
             self.start_stream_tx.clone(),
             self.segment_complete_tx.clone(),
             self.stop_stream_tx.subscribe(),
-            &live_id,
-            &stream_info.listener_url(),
-            self.segment_config.clone(),
+            &stream_info,
         );
 
+        self.port_allocator.release_port(port).await;
         self.active_streams.write().await.remove(&live_id);
 
         let error = if let Err(e) = result {
@@ -117,9 +117,9 @@ impl LiveStreamService {
 
         self.stream_terminate_tx
             .send(OnStreamTerminate::new(
-                live_id.clone(),
+                &live_id,
                 error,
-                live_cache_dir,
+                stream_info.cache_dir(),
             ))
             .ok();
 
@@ -182,7 +182,10 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StopPullStreamResponse>, Status> {
         let live_id = request.into_inner().live_id;
         let resp = StopPullStreamResponse {
-            is_success: self.stop_stream_tx.send(OnStopStream::new(live_id)).is_ok(),
+            is_success: self
+                .stop_stream_tx
+                .send(OnStopStream::new(&live_id))
+                .is_ok(),
         };
         Ok(Response::new(resp))
     }
@@ -214,9 +217,9 @@ impl Livestream for Arc<LiveStreamService> {
 impl Into<StartPullStreamResponse> for StreamInfo {
     fn into(self) -> StartPullStreamResponse {
         StartPullStreamResponse {
-            live_id: self.live_id().clone(),
+            live_id: self.live_id().to_string(),
             port: self.port() as u32,
-            passphrase: self.passphrase().clone(),
+            passphrase: self.passphrase().to_string(),
         }
     }
 }
@@ -225,7 +228,7 @@ impl Into<GetStreamStatusResponse> for StreamInfo {
     fn into(self) -> GetStreamStatusResponse {
         GetStreamStatusResponse {
             port: self.port() as u32,
-            passphrase: self.passphrase().clone(),
+            passphrase: self.passphrase().to_string(),
         }
     }
 }
