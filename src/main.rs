@@ -13,13 +13,8 @@ mod core;
 mod persistence {
     pub mod minio;
 }
+mod livestream;
 mod settings;
-mod livestream {
-    pub mod events;
-    mod handlers;
-    mod pull_stream;
-    pub mod service;
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {

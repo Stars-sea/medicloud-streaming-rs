@@ -1,8 +1,10 @@
-use self::grpc::livestream_server::Livestream;
-use self::grpc::*;
 use super::events::*;
+use super::grpc::livestream_server::Livestream;
+use super::grpc::*;
 use super::handlers::*;
+use super::port_allocator::PortAllocator;
 use super::pull_stream::pull_srt_loop;
+use super::stream_info::StreamInfo;
 
 use crate::persistence::minio::MinioClient;
 use crate::settings::Settings;
@@ -19,25 +21,13 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tonic::{Request, Response, Status};
 
-pub use self::grpc::livestream_server::LivestreamServer;
-
-mod grpc {
-    tonic::include_proto!("livestream");
-}
-
-#[derive(Debug, Clone)]
-struct StreamInfo {
-    live_id: String,
-    cache_dir: PathBuf,
-
-    url: String,
-    code: String,
-}
+pub use super::grpc::livestream_server::LivestreamServer;
 
 #[derive(Debug)]
 pub struct LiveStreamService {
     segment_config: Settings,
 
+    port_allocator: PortAllocator,
     active_streams: RwLock<HashMap<String, StreamInfo>>,
 
     segment_complete_tx: SegmentCompleteTx,
@@ -56,8 +46,16 @@ impl LiveStreamService {
         tokio::spawn(minio_uploader(segment_complete_rx, minio_client));
         tokio::spawn(stream_termination_handler(task_finish_rx));
 
+        let port_allocator = {
+            let (start_port, end_port) = segment_config
+                .srt_port_range()
+                .expect("Invalid SRT port range in settings");
+            PortAllocator::new(start_port, end_port)
+        };
+
         Self {
             segment_config,
+            port_allocator,
             active_streams: RwLock::new(HashMap::new()),
             segment_complete_tx,
             stream_terminate_tx,
@@ -75,29 +73,35 @@ impl LiveStreamService {
         }
     }
 
-    async fn pull_stream_impl(self: &Arc<Self>, request: StartPullStreamRequest) -> Result<()> {
+    async fn pull_stream_impl(
+        self: &Arc<Self>,
+        request: StartPullStreamRequest,
+        port: u16,
+    ) -> Result<()> {
         let live_id = request.live_id;
 
         let live_cache_dir = PathBuf::from(&self.segment_config.cache_dir).join(&live_id);
         fs::create_dir_all(&live_cache_dir).await?;
 
-        info!("Connected, start pulling stream (LiveId: {})", live_id);
-        self.active_streams.write().await.insert(
+        let stream_info = StreamInfo::new(
             live_id.clone(),
-            StreamInfo {
-                live_id: live_id.clone(),
-                cache_dir: live_cache_dir.clone(),
-                url: format!("{}?mode=caller", &request.url),
-                code: request.passphrase.clone(),
-            },
+            port,
+            live_cache_dir.clone(),
+            request.passphrase.clone(),
         );
+
+        info!("Connected, start pulling stream (LiveId: {})", live_id);
+        self.active_streams
+            .write()
+            .await
+            .insert(live_id.clone(), stream_info.clone());
 
         let result = pull_srt_loop(
             self.start_stream_tx.clone(),
             self.segment_complete_tx.clone(),
             self.stop_stream_tx.subscribe(),
             &live_id,
-            &format!("{}?mode=listener", &request.url),
+            &stream_info.listener_url(),
             self.segment_config.clone(),
         );
 
@@ -139,9 +143,18 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StartPullStreamResponse>, Status> {
         let request = request.into_inner();
 
+        let port = match self.port_allocator.allocate_safe_port().await {
+            Some(p) => p,
+            None => {
+                return Err(Status::resource_exhausted(
+                    "No available ports to allocate for SRT stream",
+                ));
+            }
+        };
+
         let cloned_self = Arc::clone(self);
         let cloned_request = request.clone();
-        tokio::spawn(async move { cloned_self.pull_stream_impl(cloned_request).await });
+        tokio::spawn(async move { cloned_self.pull_stream_impl(cloned_request, port).await });
 
         let timeout = timeout(
             Duration::from_secs(60),
@@ -156,11 +169,7 @@ impl Livestream for Arc<LiveStreamService> {
         }
 
         if let Some(info) = self.get_stream_status_impl(request.live_id.clone()).await {
-            let resp = StartPullStreamResponse {
-                live_id: info.live_id,
-                url: info.url,
-                code: info.code,
-            };
+            let resp: StartPullStreamResponse = info.into();
             Ok(Response::new(resp))
         } else {
             Err(Status::internal("Failed to find pulling stream info"))
@@ -194,13 +203,29 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<GetStreamStatusResponse>, Status> {
         let live_id = request.into_inner().live_id;
         if let Some(info) = self.get_stream_status_impl(live_id).await {
-            let resp = GetStreamStatusResponse {
-                url: info.url,
-                code: info.code,
-            };
+            let resp: GetStreamStatusResponse = info.into();
             Ok(Response::new(resp))
         } else {
             Err(Status::not_found("Stream not found"))
+        }
+    }
+}
+
+impl Into<StartPullStreamResponse> for StreamInfo {
+    fn into(self) -> StartPullStreamResponse {
+        StartPullStreamResponse {
+            live_id: self.live_id().clone(),
+            port: self.port() as u32,
+            passphrase: self.passphrase().clone(),
+        }
+    }
+}
+
+impl Into<GetStreamStatusResponse> for StreamInfo {
+    fn into(self) -> GetStreamStatusResponse {
+        GetStreamStatusResponse {
+            port: self.port() as u32,
+            passphrase: self.passphrase().clone(),
         }
     }
 }
