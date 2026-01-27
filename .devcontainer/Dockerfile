@@ -2,11 +2,7 @@ FROM mcr.microsoft.com/devcontainers/rust:2-1-trixie
 
 # Set Tsinghua University Debian mirror
 
-USER root
-
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
-
-USER vscode
+RUN sudo sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
 
 RUN mkdir -p ~/.cargo && \
     echo "[source.crates-io]" > ~/.cargo/config.toml && \

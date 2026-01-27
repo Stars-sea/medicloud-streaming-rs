@@ -10,6 +10,9 @@ services:
       MINIO_BUCKET: videos
       RUST_LOG: info
       GRPC_PORT: 50051
+    ports:
+      - "50051:50051"
+      - "4000-5000:4000-5000/udp"
     volumes:
       - ../..:/workspaces:cached
     networks:
