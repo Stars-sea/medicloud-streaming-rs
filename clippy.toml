@@ -1,0 +1,9 @@
+# Clippy linting configuration
+# Warn on common issues
+warn-on-all-wildcard-imports = true
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Documentation
+missing-docs-in-crate-items = false

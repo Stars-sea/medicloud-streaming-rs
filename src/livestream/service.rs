@@ -273,21 +273,21 @@ impl Livestream for Arc<LiveStreamService> {
     }
 }
 
-impl Into<StartPullStreamResponse> for StreamInfo {
-    fn into(self) -> StartPullStreamResponse {
+impl From<StreamInfo> for StartPullStreamResponse {
+    fn from(stream_info: StreamInfo) -> Self {
         StartPullStreamResponse {
-            live_id: self.live_id().to_string(),
-            port: self.port() as u32,
-            passphrase: self.passphrase().to_string(),
+            live_id: stream_info.live_id().to_string(),
+            port: stream_info.port() as u32,
+            passphrase: stream_info.passphrase().to_string(),
         }
     }
 }
 
-impl Into<GetStreamInfoResponse> for StreamInfo {
-    fn into(self) -> GetStreamInfoResponse {
+impl From<StreamInfo> for GetStreamInfoResponse {
+    fn from(stream_info: StreamInfo) -> Self {
         GetStreamInfoResponse {
-            port: self.port() as u32,
-            passphrase: self.passphrase().to_string(),
+            port: stream_info.port() as u32,
+            passphrase: stream_info.passphrase().to_string(),
         }
     }
 }
