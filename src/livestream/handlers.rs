@@ -1,4 +1,4 @@
-use crate::livestream::events::{SegmentCompleteStream, StreamTerminateStream};
+use crate::livestream::events::SegmentCompleteStream;
 use crate::persistence::minio::MinioClient;
 use log::{debug, info, warn};
 use tokio::fs;
@@ -31,33 +31,4 @@ pub(super) async fn minio_uploader(
         }
     }
     Ok(())
-}
-
-pub(super) async fn stream_termination_handler(mut stream: StreamTerminateStream) {
-    while let Some(termination) = stream.next().await {
-        if termination.is_err() {
-            continue;
-        }
-
-        let termination = termination.unwrap();
-        let path = termination.path();
-
-        let entries = fs::read_dir(path).await.ok();
-        if entries.is_none() {
-            continue;
-        }
-
-        let mut entries = entries.unwrap();
-        let mut is_dir_empty = true;
-        while let Some(Some(entry)) = entries.next_entry().await.ok() {
-            let filename = entry.file_name();
-            if filename != "." && filename != ".." {
-                is_dir_empty = false;
-            }
-        }
-
-        if is_dir_empty && fs::remove_dir_all(path).await.is_err() {
-            warn!("Failed to remove directory {}", path.display());
-        }
-    }
 }

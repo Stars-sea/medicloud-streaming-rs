@@ -16,10 +16,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_stream::try_stream;
 use log::info;
+use log::warn;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReadDirStream;
 use tonic::{Request, Response, Status};
 
 pub use super::grpc::livestream_server::LivestreamServer;
@@ -46,15 +48,12 @@ impl LiveStreamService {
         let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
 
         let (stream_connected_tx, _) = OnStreamConnected::channel(16);
-        let (stream_terminate_tx, stream_terminate_rx) = OnStreamTerminate::channel(16);
+        let (stream_terminate_tx, _) = OnStreamTerminate::channel(16);
 
         tokio::spawn(minio_uploader(
             SegmentCompleteStream::new(segment_complete_rx),
             minio_client,
         ));
-        tokio::spawn(stream_termination_handler(StreamTerminateStream::new(
-            stream_terminate_rx,
-        )));
 
         let port_allocator = {
             let (start_port, end_port) = settings
@@ -74,28 +73,58 @@ impl LiveStreamService {
         }
     }
 
-    async fn alloc_port(&self) -> Result<u16> {
-        self.port_allocator
+    async fn make_stream_info(&self, live_id: &str, passphrase: &str) -> Result<StreamInfo> {
+        let port = self
+            .port_allocator
             .allocate_safe_port()
             .await
-            .ok_or(anyhow::bail!(
+            .ok_or(anyhow::anyhow!(
                 "No available ports to allocate for SRT stream"
-            ))
-    }
+            ))?;
 
-    async fn start_stream_impl(&self, live_id: &str, passphrase: &str, port: u16) -> Result<()> {
-        let live_id = live_id.to_string();
-        let stream_info = StreamInfo::new(
-            live_id.clone(),
+        let info = StreamInfo::new(
+            live_id.to_string(),
             port,
             passphrase.to_string(),
             &self.settings,
         );
-        fs::create_dir_all(stream_info.cache_dir()).await?;
 
+        if let Err(e) = fs::create_dir_all(info.cache_dir()).await {
+            self.port_allocator.release_port(port).await;
+            return Err(anyhow::anyhow!("Failed to create cache directory: {e}"));
+        }
+
+        Ok(info)
+    }
+
+    async fn release_stream_resources(&self, info: StreamInfo) -> Result<()> {
+        // Release allocated port
+        self.port_allocator.release_port(info.port()).await;
+
+        // Remove empty cache directory
+        let read_dir = fs::read_dir(info.cache_dir()).await?;
+        let entries_stream = ReadDirStream::new(read_dir);
+
+        let is_not_empty = entries_stream
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                let filename = entry.file_name();
+                filename != "." && filename != ".."
+            })
+            .await;
+
+        if !is_not_empty && let Err(e) = fs::remove_dir_all(info.cache_dir()).await {
+            anyhow::bail!("Failed to remove cache directory: {e}");
+        }
+
+        Ok(())
+    }
+
+    async fn start_stream_impl(&self, stream_info: StreamInfo) -> Result<()> {
+        let live_id = stream_info.live_id().to_string();
         info!(
-            "Ready to pull stream at port {} (LiveId: {})",
-            port, live_id
+            "Ready to pull stream at port {} (LiveId: {live_id})",
+            stream_info.port()
         );
 
         self.active_streams
@@ -111,8 +140,11 @@ impl LiveStreamService {
             &stream_info,
         );
 
-        self.port_allocator.release_port(port).await;
         self.active_streams.write().await.remove(&live_id);
+
+        if let Err(e) = self.release_stream_resources(stream_info).await {
+            warn!("Failed to release resources for stream {live_id}: {e}");
+        }
 
         result
     }
@@ -167,21 +199,16 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StartPullStreamResponse>, Status> {
         let request = request.into_inner();
 
-        let port = match self.alloc_port().await {
-            Ok(p) => p,
+        let stream_info = match self
+            .make_stream_info(&request.live_id, &request.passphrase)
+            .await
+        {
+            Ok(info) => info,
             Err(e) => return Err(Status::resource_exhausted(e.to_string())),
         };
 
         let cloned_self = Arc::clone(self);
-        let StartPullStreamRequest {
-            live_id,
-            passphrase,
-        } = request.clone();
-        tokio::spawn(async move {
-            cloned_self
-                .start_stream_impl(&live_id, &passphrase, port)
-                .await
-        });
+        tokio::spawn(async move { cloned_self.start_stream_impl(stream_info).await });
 
         if let Some(info) = self.get_stream_info_impl(request.live_id.clone()).await {
             let resp: StartPullStreamResponse = info.into();
