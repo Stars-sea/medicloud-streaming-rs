@@ -57,7 +57,7 @@ fn pull_srt_loop_impl(
     while !stop_rx.try_recv().is_ok_and(|id| id.live_id() == live_id) {
         let packet = Packet::alloc()?;
         let bytes_read = packet.read_safely(&input_ctx);
-        
+
         if bytes_read == 0 {
             debug!("Stream ended for {}", live_id);
             break;
@@ -73,8 +73,10 @@ fn pull_srt_loop_impl(
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
             output_ctx.release_and_close()?;
-            
-            if let Err(e) = segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx)) {
+
+            if let Err(e) =
+                segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))
+            {
                 warn!("Failed to send segment complete event: {}", e);
             }
 
@@ -87,7 +89,7 @@ fn pull_srt_loop_impl(
     }
 
     output_ctx.release_and_close()?;
-    
+
     if let Err(e) = segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx)) {
         warn!("Failed to send final segment complete event: {}", e);
     }

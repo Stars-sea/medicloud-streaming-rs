@@ -46,8 +46,8 @@ async fn main() -> Result<()> {
 
     let livestream = Arc::new(LiveStreamService::new(minio_client, settings));
 
-    let grpc_port = var("GRPC_PORT")
-        .map_err(|_| anyhow::anyhow!("GRPC_PORT environment variable not set"))?;
+    let grpc_port =
+        var("GRPC_PORT").map_err(|_| anyhow::anyhow!("GRPC_PORT environment variable not set"))?;
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);
     info!("Server will listen on {}", grpc_addr);
 

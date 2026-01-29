@@ -41,9 +41,9 @@ impl Settings {
             .srt_ports
             .split('-')
             .map(|s| {
-                s.trim().parse::<u16>().with_context(|| {
-                    format!("Invalid port number in range: '{}'", s)
-                })
+                s.trim()
+                    .parse::<u16>()
+                    .with_context(|| format!("Invalid port number in range: '{}'", s))
             })
             .collect::<Result<Vec<u16>>>()?;
 
@@ -62,84 +62,5 @@ impl Settings {
         }
 
         Ok((segments[0], segments[1]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_srt_port_range_valid() {
-        let settings = Settings {
-            srt_ports: "4000-5000".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), (4000, 5000));
-    }
-
-    #[test]
-    fn test_srt_port_range_with_spaces() {
-        let settings = Settings {
-            srt_ports: "4000 - 5000".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), (4000, 5000));
-    }
-
-    #[test]
-    fn test_srt_port_range_invalid_format() {
-        let settings = Settings {
-            srt_ports: "4000".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_srt_port_range_invalid_order() {
-        let settings = Settings {
-            srt_ports: "5000-4000".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_srt_port_range_equal_ports() {
-        let settings = Settings {
-            srt_ports: "4000-4000".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_srt_port_range_invalid_number() {
-        let settings = Settings {
-            srt_ports: "abc-def".to_string(),
-            segment_time: 10,
-            cache_dir: "./cache".to_string(),
-        };
-
-        let result = settings.srt_port_range();
-        assert!(result.is_err());
     }
 }

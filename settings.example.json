@@ -1,5 +1,0 @@
-{
-  "srt_ports": "4000-5000",
-  "cache_dir": "./cache",
-  "segment_time": 10
-}

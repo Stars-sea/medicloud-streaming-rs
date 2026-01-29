@@ -1,7 +1,7 @@
 //! SRT input context wrapper for FFmpeg.
 
-use crate::core::context::{ffmpeg_error, Context};
-use anyhow::{anyhow, Result};
+use crate::core::context::{Context, ffmpeg_error};
+use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
 use std::ptr::null_mut;
 

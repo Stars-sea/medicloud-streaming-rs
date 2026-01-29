@@ -2,11 +2,11 @@
 
 use anyhow::Result;
 use log::debug;
+use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
 use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
-use minio::s3::Client;
 use std::path::Path;
 use std::sync::Arc;
 

@@ -2,7 +2,7 @@
 
 use crate::core::stream::Stream;
 use ffmpeg_sys_next::*;
-use std::ffi::{c_int, CStr};
+use std::ffi::{CStr, c_int};
 
 /// Trait for accessing AVFormatContext functionality.
 ///

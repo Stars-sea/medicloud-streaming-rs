@@ -4,7 +4,7 @@ use ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_sys_next::*;
 
 /// Wrapper around FFmpeg's AVStream with safe accessor methods.
-/// 
+///
 /// # Safety
 /// This struct maintains a raw pointer to AVStream which is managed by
 /// the parent AVFormatContext. The pointer is valid as long as the parent
