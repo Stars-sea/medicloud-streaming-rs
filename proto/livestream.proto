@@ -11,7 +11,9 @@ service Livestream {
 
   rpc ListActiveStreams (ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
 
-  rpc GetStreamStatus (GetStreamStatusRequest) returns (GetStreamStatusResponse);
+  rpc GetStreamInfo (GetStreamInfoRequest) returns (GetStreamInfoResponse);
+
+  rpc WatchStreamStatus (WatchStreamStatusRequest) returns (stream WatchStreamStatusResponse);
 }
 
 message StartPullStreamRequest {
@@ -40,11 +42,20 @@ message ListActiveStreamsResponse {
   repeated string live_ids = 1;
 }
 
-message GetStreamStatusRequest {
+message GetStreamInfoRequest {
   string live_id = 1;
 }
 
-message GetStreamStatusResponse {
+message GetStreamInfoResponse {
   uint32 port = 1;
   string passphrase = 2;
+}
+
+message WatchStreamStatusRequest {
+  string live_id = 1;
+}
+
+message WatchStreamStatusResponse {
+  string live_id = 1;
+  bool is_streaming = 2;
 }

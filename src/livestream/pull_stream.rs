@@ -1,5 +1,5 @@
 use super::events::{
-    OnSegmentComplete, OnStreamStarted, SegmentCompleteTx, StopStreamRx, StreamStartedTx,
+    OnSegmentComplete, OnStartStream, SegmentCompleteTx, StartStreamTx, StopStreamRx,
 };
 use super::stream_info::StreamInfo;
 
@@ -31,7 +31,7 @@ fn should_segment(
 }
 
 pub(super) fn pull_srt_loop(
-    start_tx: StreamStartedTx,
+    start_tx: StartStreamTx,
     segment_complete_tx: SegmentCompleteTx,
     mut stop_rx: StopStreamRx,
     info: &StreamInfo,
@@ -55,7 +55,7 @@ pub(super) fn pull_srt_loop(
 
         // Send stream started event on first segment
         if segment_id == 1 {
-            start_tx.send(OnStreamStarted::new(live_id))?;
+            start_tx.send(OnStartStream::new(live_id))?;
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {

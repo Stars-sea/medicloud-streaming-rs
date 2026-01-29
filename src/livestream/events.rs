@@ -3,6 +3,7 @@
 use crate::core::output::TsOutputContext;
 use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
 
 #[derive(Clone, Debug)]
 pub struct OnSegmentComplete {
@@ -13,6 +14,8 @@ pub struct OnSegmentComplete {
 
 pub type SegmentCompleteRx = mpsc::UnboundedReceiver<OnSegmentComplete>;
 pub type SegmentCompleteTx = mpsc::UnboundedSender<OnSegmentComplete>;
+
+pub type SegmentCompleteStream = UnboundedReceiverStream<OnSegmentComplete>;
 
 impl OnSegmentComplete {
     pub fn channel() -> (SegmentCompleteTx, SegmentCompleteRx) {
@@ -50,16 +53,16 @@ impl OnSegmentComplete {
 }
 
 #[derive(Clone, Debug)]
-pub struct OnStreamStarted {
+pub struct OnStartStream {
     live_id: String,
 }
 
-pub type StreamStartedRx = broadcast::Receiver<OnStreamStarted>;
-pub type StreamStartedTx = broadcast::Sender<OnStreamStarted>;
+pub type StartStreamRx = broadcast::Receiver<OnStartStream>;
+pub type StartStreamTx = broadcast::Sender<OnStartStream>;
 
-impl OnStreamStarted {
-    pub fn channel(capacity: usize) -> (StreamStartedTx, StreamStartedRx) {
-        broadcast::channel::<OnStreamStarted>(capacity)
+impl OnStartStream {
+    pub fn channel(capacity: usize) -> (StartStreamTx, StartStreamRx) {
+        broadcast::channel::<OnStartStream>(capacity)
     }
 
     pub fn new(live_id: &str) -> Self {
@@ -70,42 +73,6 @@ impl OnStreamStarted {
 
     pub fn live_id(&self) -> &str {
         &self.live_id
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct OnStreamTerminate {
-    live_id: String,
-    error: Option<String>,
-    path: PathBuf,
-}
-
-pub type StreamTerminateRx = broadcast::Receiver<OnStreamTerminate>;
-pub type StreamTerminateTx = broadcast::Sender<OnStreamTerminate>;
-
-impl OnStreamTerminate {
-    pub fn channel(capacity: usize) -> (StreamTerminateTx, StreamTerminateRx) {
-        broadcast::channel::<OnStreamTerminate>(capacity)
-    }
-
-    pub fn new<T: AsRef<Path>>(live_id: &str, error: Option<String>, path: T) -> Self {
-        Self {
-            live_id: live_id.to_string(),
-            error,
-            path: PathBuf::from(path.as_ref()),
-        }
-    }
-
-    pub fn live_id(&self) -> &str {
-        &self.live_id
-    }
-
-    pub fn error(&self) -> &Option<String> {
-        &self.error
-    }
-
-    pub fn path(&self) -> &PathBuf {
-        &self.path
     }
 }
 
@@ -130,5 +97,69 @@ impl OnStopStream {
 
     pub fn live_id(&self) -> &str {
         &self.live_id
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OnStreamConnected {
+    live_id: String,
+}
+
+pub type StreamConnectedRx = broadcast::Receiver<OnStreamConnected>;
+pub type StreamConnectedTx = broadcast::Sender<OnStreamConnected>;
+
+pub type StreamConnectedStream = BroadcastStream<OnStreamConnected>;
+
+impl OnStreamConnected {
+    pub fn channel(capacity: usize) -> (StreamConnectedTx, StreamConnectedRx) {
+        broadcast::channel::<OnStreamConnected>(capacity)
+    }
+
+    pub fn new(live_id: &str) -> Self {
+        Self {
+            live_id: live_id.to_string(),
+        }
+    }
+
+    pub fn live_id(&self) -> &str {
+        &self.live_id
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OnStreamTerminate {
+    live_id: String,
+    error: Option<String>,
+    path: PathBuf,
+}
+
+pub type StreamTerminateRx = broadcast::Receiver<OnStreamTerminate>;
+pub type StreamTerminateTx = broadcast::Sender<OnStreamTerminate>;
+
+pub type StreamTerminateStream = BroadcastStream<OnStreamTerminate>;
+
+impl OnStreamTerminate {
+    pub fn channel(capacity: usize) -> (StreamTerminateTx, StreamTerminateRx) {
+        broadcast::channel::<OnStreamTerminate>(capacity)
+    }
+
+    pub fn new<T: AsRef<Path>>(live_id: &str, error: Option<String>, path: T) -> Self {
+        Self {
+            live_id: live_id.to_string(),
+            error,
+            path: PathBuf::from(path.as_ref()),
+        }
+    }
+
+    pub fn live_id(&self) -> &str {
+        &self.live_id
+    }
+
+    pub fn error(&self) -> &Option<String> {
+        &self.error
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 }

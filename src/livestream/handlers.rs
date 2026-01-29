@@ -1,19 +1,14 @@
-use crate::livestream::events::{SegmentCompleteRx, StreamTerminateRx};
+use crate::livestream::events::{SegmentCompleteStream, StreamTerminateStream};
 use crate::persistence::minio::MinioClient;
 use log::{debug, info, warn};
 use tokio::fs;
+use tokio_stream::StreamExt;
 
 pub(super) async fn minio_uploader(
-    mut rx: SegmentCompleteRx,
+    mut stream: SegmentCompleteStream,
     minio: MinioClient,
 ) -> anyhow::Result<()> {
-    loop {
-        let rx_content = rx.recv().await;
-        if rx_content.is_none() {
-            continue;
-        }
-
-        let complete_info = rx_content.unwrap();
+    while let Some(complete_info) = stream.next().await {
         let path = complete_info.path();
         info!("Uploading file {}", path.display());
 
@@ -35,11 +30,16 @@ pub(super) async fn minio_uploader(
             warn!("Failed to remove file {}", path.display());
         }
     }
+    Ok(())
 }
 
-pub(super) async fn stream_termination_handler(mut rx: StreamTerminateRx) {
-    loop {
-        let termination = rx.recv().await.unwrap();
+pub(super) async fn stream_termination_handler(mut stream: StreamTerminateStream) {
+    while let Some(termination) = stream.next().await {
+        if termination.is_err() {
+            continue;
+        }
+
+        let termination = termination.unwrap();
         let path = termination.path();
 
         let entries = fs::read_dir(path).await.ok();

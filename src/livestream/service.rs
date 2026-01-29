@@ -10,15 +10,19 @@ use crate::persistence::minio::MinioClient;
 use crate::settings::Settings;
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_stream::try_stream;
 use log::info;
 use log::warn;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
+use tokio_stream::Stream;
+use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
 pub use super::grpc::livestream_server::LivestreamServer;
@@ -31,20 +35,31 @@ pub struct LiveStreamService {
     active_streams: RwLock<HashMap<String, StreamInfo>>,
 
     segment_complete_tx: SegmentCompleteTx,
-    stream_terminate_tx: StreamTerminateTx,
-    start_stream_tx: StreamStartedTx,
+
+    start_stream_tx: StartStreamTx,
     stop_stream_tx: StopStreamTx,
+
+    stream_connected_tx: StreamConnectedTx,
+    stream_terminate_tx: StreamTerminateTx,
 }
 
 impl LiveStreamService {
     pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
-        let (stream_terminate_tx, task_finish_rx) = OnStreamTerminate::channel(16);
-        let (start_stream_tx, _) = OnStreamStarted::channel(16);
-        let (stop_stream_tx, _) = OnStopStream::channel(16);
         let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
 
-        tokio::spawn(minio_uploader(segment_complete_rx, minio_client));
-        tokio::spawn(stream_termination_handler(task_finish_rx));
+        let (start_stream_tx, _) = OnStartStream::channel(16);
+        let (stop_stream_tx, _) = OnStopStream::channel(16);
+
+        let (stream_connected_tx, _) = OnStreamConnected::channel(16);
+        let (stream_terminate_tx, task_finish_rx) = OnStreamTerminate::channel(16);
+
+        tokio::spawn(minio_uploader(
+            SegmentCompleteStream::new(segment_complete_rx),
+            minio_client,
+        ));
+        tokio::spawn(stream_termination_handler(StreamTerminateStream::new(
+            task_finish_rx,
+        )));
 
         let port_allocator = {
             let (start_port, end_port) = settings
@@ -58,9 +73,10 @@ impl LiveStreamService {
             port_allocator,
             active_streams: RwLock::new(HashMap::new()),
             segment_complete_tx,
-            stream_terminate_tx,
             start_stream_tx,
             stop_stream_tx,
+            stream_connected_tx,
+            stream_terminate_tx,
         }
     }
 
@@ -130,8 +146,37 @@ impl LiveStreamService {
         self.active_streams.read().await.keys().cloned().collect()
     }
 
-    async fn get_stream_status_impl(self: &Arc<Self>, live_id: String) -> Option<StreamInfo> {
+    async fn get_stream_info_impl(self: &Arc<Self>, live_id: String) -> Option<StreamInfo> {
         self.active_streams.read().await.get(&live_id).cloned()
+    }
+
+    fn watch_stream_status_impl(
+        // self: &Arc<Self>,
+        live_id: String,
+        connected_rx: StreamConnectedRx,
+        terminate_rx: StreamTerminateRx,
+    ) -> impl Stream<Item = Result<WatchStreamStatusResponse>> {
+        let mut connected_stream = StreamConnectedStream::new(connected_rx);
+        let mut terminate_stream = StreamTerminateStream::new(terminate_rx);
+
+        try_stream! {
+            loop {
+                tokio::select! {
+                    Some(Ok(connected)) = connected_stream.next() => {
+                        if connected.live_id() == live_id {
+                            yield WatchStreamStatusResponse { live_id: live_id.clone(), is_streaming: true };
+                        }
+                    }
+
+                    Some(Ok(terminate)) = terminate_stream.next() => {
+                        if terminate.live_id() == live_id {
+                            yield WatchStreamStatusResponse { live_id: live_id.clone(), is_streaming: false };
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -168,7 +213,7 @@ impl Livestream for Arc<LiveStreamService> {
             ));
         }
 
-        if let Some(info) = self.get_stream_status_impl(request.live_id.clone()).await {
+        if let Some(info) = self.get_stream_info_impl(request.live_id.clone()).await {
             let resp: StartPullStreamResponse = info.into();
             Ok(Response::new(resp))
         } else {
@@ -200,17 +245,37 @@ impl Livestream for Arc<LiveStreamService> {
         Ok(Response::new(resp))
     }
 
-    async fn get_stream_status(
+    async fn get_stream_info(
         &self,
-        request: Request<GetStreamStatusRequest>,
-    ) -> Result<Response<GetStreamStatusResponse>, Status> {
+        request: Request<GetStreamInfoRequest>,
+    ) -> Result<Response<GetStreamInfoResponse>, Status> {
         let live_id = request.into_inner().live_id;
-        if let Some(info) = self.get_stream_status_impl(live_id).await {
-            let resp: GetStreamStatusResponse = info.into();
+        if let Some(info) = self.get_stream_info_impl(live_id).await {
+            let resp: GetStreamInfoResponse = info.into();
             Ok(Response::new(resp))
         } else {
             Err(Status::not_found("Stream not found"))
         }
+    }
+
+    type WatchStreamStatusStream =
+        Pin<Box<dyn Stream<Item = Result<WatchStreamStatusResponse, Status>> + Send>>;
+
+    async fn watch_stream_status(
+        &self,
+        request: Request<WatchStreamStatusRequest>,
+    ) -> Result<Response<Self::WatchStreamStatusStream>, Status> {
+        let live_id = request.into_inner().live_id;
+
+        let stream = LiveStreamService::watch_stream_status_impl(
+            live_id.clone(),
+            self.stream_connected_tx.subscribe(),
+            self.stream_terminate_tx.subscribe(),
+        )
+        .map(|r| r.map_err(|e| Status::cancelled(e.to_string())));
+        Ok(Response::new(
+            Box::pin(stream) as Self::WatchStreamStatusStream
+        ))
     }
 }
 
@@ -224,9 +289,9 @@ impl Into<StartPullStreamResponse> for StreamInfo {
     }
 }
 
-impl Into<GetStreamStatusResponse> for StreamInfo {
-    fn into(self) -> GetStreamStatusResponse {
-        GetStreamStatusResponse {
+impl Into<GetStreamInfoResponse> for StreamInfo {
+    fn into(self) -> GetStreamInfoResponse {
+        GetStreamInfoResponse {
             port: self.port() as u32,
             passphrase: self.passphrase().to_string(),
         }
