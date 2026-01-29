@@ -1,3 +1,5 @@
+//! Live stream service managing SRT stream pulling and processing.
+
 use super::events::*;
 use super::grpc::livestream_server::Livestream;
 use super::grpc::*;
@@ -15,17 +17,20 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_stream::try_stream;
-use log::info;
-use log::warn;
+use log::{info, warn};
 use tokio::fs;
 use tokio::sync::RwLock;
-use tokio_stream::Stream;
-use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
+use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
 pub use super::grpc::livestream_server::LivestreamServer;
 
+// Channel buffer sizes
+const STOP_STREAM_CHANNEL_SIZE: usize = 16;
+const STREAM_EVENT_CHANNEL_SIZE: usize = 16;
+
+/// Service managing live stream operations via gRPC.
 #[derive(Debug)]
 pub struct LiveStreamService {
     settings: Settings,
@@ -42,13 +47,18 @@ pub struct LiveStreamService {
 }
 
 impl LiveStreamService {
+    /// Creates a new LiveStreamService.
+    ///
+    /// # Arguments
+    /// * `minio_client` - Client for uploading segments to MinIO
+    /// * `settings` - Application settings
     pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
-        let (stop_stream_tx, _) = OnStopStream::channel(16);
+        let (stop_stream_tx, _) = OnStopStream::channel(STOP_STREAM_CHANNEL_SIZE);
 
         let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
 
-        let (stream_connected_tx, _) = OnStreamConnected::channel(16);
-        let (stream_terminate_tx, _) = OnStreamTerminate::channel(16);
+        let (stream_connected_tx, _) = OnStreamConnected::channel(STREAM_EVENT_CHANNEL_SIZE);
+        let (stream_terminate_tx, _) = OnStreamTerminate::channel(STREAM_EVENT_CHANNEL_SIZE);
 
         tokio::spawn(minio_uploader(
             SegmentCompleteStream::new(segment_complete_rx),

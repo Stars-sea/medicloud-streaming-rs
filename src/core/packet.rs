@@ -1,13 +1,24 @@
-use crate::core::context::{Context, ffmpeg_error};
-use anyhow::{Result, anyhow};
+//! FFmpeg packet wrapper for safe packet operations.
+
+use crate::core::context::{ffmpeg_error, Context};
+use anyhow::{anyhow, Result};
 use ffmpeg_sys_next::*;
 use log::debug;
 
+/// Wrapper for FFmpeg AVPacket with safe operations.
+///
+/// # Safety
+/// Manages the lifecycle of AVPacket through RAII.
+/// The packet is allocated in `alloc()` and freed in `Drop`.
 pub struct Packet {
     packet: *mut AVPacket,
 }
 
 impl Packet {
+    /// Allocates a new packet.
+    ///
+    /// # Errors
+    /// Returns an error if allocation fails.
     pub fn alloc() -> Result<Self> {
         let pkt = unsafe { av_packet_alloc() };
         if pkt.is_null() {

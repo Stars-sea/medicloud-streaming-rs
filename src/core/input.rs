@@ -1,8 +1,15 @@
+//! SRT input context wrapper for FFmpeg.
+
 use crate::core::context::{ffmpeg_error, Context};
 use anyhow::{anyhow, Result};
 use ffmpeg_sys_next::*;
 use std::ptr::null_mut;
 
+/// Wrapper for FFmpeg input context configured for SRT streams.
+///
+/// # Safety
+/// Manages the lifecycle of AVFormatContext through RAII.
+/// The context is opened in `open()` and closed in `Drop`.
 #[derive(Debug)]
 pub struct SrtInputContext {
     ctx: *mut AVFormatContext,
@@ -15,6 +22,13 @@ impl Context for SrtInputContext {
 }
 
 impl SrtInputContext {
+    /// Opens an SRT stream for reading.
+    ///
+    /// # Arguments
+    /// * `path` - SRT URL (e.g., "srt://0.0.0.0:4000?mode=listener&passphrase=secret")
+    ///
+    /// # Errors
+    /// Returns an error if the stream cannot be opened or stream info cannot be found.
     pub fn open(path: &str) -> Result<Self> {
         let mut ctx: *mut AVFormatContext = null_mut();
         let c_url = std::ffi::CString::new(path)?;
