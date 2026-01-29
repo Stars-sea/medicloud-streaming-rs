@@ -1,3 +1,11 @@
+//! Core FFmpeg wrapper modules for handling media streams.
+//!
+//! This module provides safe Rust abstractions over FFmpeg's C API for:
+//! - Input/output context management
+//! - Packet processing
+//! - Stream information
+//! - Context utilities
+
 use ffmpeg_sys_next::*;
 use log::Level;
 
@@ -7,6 +15,7 @@ pub mod output;
 pub mod packet;
 mod stream;
 
+/// Sets the FFmpeg logging level based on Rust log levels.
 #[allow(dead_code)]
 pub fn set_log_level(level: Level) {
     let c_level = match level {
@@ -19,10 +28,13 @@ pub fn set_log_level(level: Level) {
     unsafe { av_log_set_level(c_level) }
 }
 
+/// Disables all FFmpeg logging output.
 pub fn set_log_quiet() {
     unsafe { av_log_set_level(AV_LOG_QUIET) }
 }
 
+/// Initializes FFmpeg network components.
+/// Must be called before using network protocols like SRT.
 pub fn init() {
     unsafe {
         avformat_network_init();
