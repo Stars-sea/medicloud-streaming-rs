@@ -137,11 +137,6 @@ impl LiveStreamService {
             stream_info.port()
         );
 
-        self.active_streams
-            .write()
-            .await
-            .insert(live_id.clone(), stream_info.clone());
-
         let result = pull_srt_loop(
             self.stream_connected_tx.clone(),
             self.stream_terminate_tx.clone(),
@@ -216,13 +211,6 @@ impl Livestream for Arc<LiveStreamService> {
         if request.passphrase.is_empty() {
             return Err(Status::invalid_argument("passphrase cannot be empty"));
         }
-        
-        // Check if stream already exists
-        if self.get_stream_info_impl(request.live_id.clone()).await.is_some() {
-            return Err(Status::already_exists(
-                format!("Stream with live_id '{}' is already active", request.live_id)
-            ));
-        }
 
         let stream_info = match self
             .make_stream_info(&request.live_id, &request.passphrase)
@@ -232,15 +220,37 @@ impl Livestream for Arc<LiveStreamService> {
             Err(e) => return Err(Status::resource_exhausted(e.to_string())),
         };
 
-        let cloned_self = Arc::clone(self);
-        tokio::spawn(async move { cloned_self.start_stream_impl(stream_info).await });
-
-        if let Some(info) = self.get_stream_info_impl(request.live_id.clone()).await {
-            let resp: StartPullStreamResponse = info.into();
-            Ok(Response::new(resp))
-        } else {
-            Err(Status::internal("Failed to find pulling stream info"))
+        // Check for duplicate and insert atomically
+        {
+            let mut streams = self.active_streams.write().await;
+            if streams.contains_key(&request.live_id) {
+                // Release allocated resources since we won't use them
+                if let Err(e) = self.release_stream_resources(stream_info).await {
+                    warn!(
+                        "Failed to release resources for duplicate stream {}: {}",
+                        request.live_id, e
+                    );
+                }
+                return Err(Status::already_exists(format!(
+                    "Stream with live_id '{}' is already active",
+                    request.live_id
+                )));
+            }
+            // Insert immediately to prevent race condition
+            streams.insert(request.live_id.clone(), stream_info.clone());
         }
+
+        let cloned_self = Arc::clone(self);
+        let live_id = request.live_id.clone();
+        tokio::spawn(async move {
+            let result = cloned_self.start_stream_impl(stream_info).await;
+            if let Err(e) = result {
+                warn!("Stream {} failed: {}", live_id, e);
+            }
+        });
+
+        let resp: StartPullStreamResponse = stream_info.into();
+        Ok(Response::new(resp))
     }
 
     async fn stop_pull_stream(

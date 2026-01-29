@@ -61,8 +61,8 @@ RUN mkdir ./cache && chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
-# Add health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD grpc_health_probe -addr=localhost:${GRPC_PORT} || exit 1
+# Note: Uncomment the health check below if you install grpc_health_probe
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+#     CMD grpc_health_probe -addr=localhost:${GRPC_PORT} || exit 1
 
 ENTRYPOINT ["./medicloud-streaming-rs"]

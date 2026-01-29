@@ -106,10 +106,10 @@ pub(super) fn pull_srt_loop(
     let result = pull_srt_loop_impl(connected_tx, segment_complete_tx, stop_rx, info);
 
     let error = result.as_ref().err().map(|e| e.to_string());
-    
+
     if let Err(e) = terminate_tx.send(OnStreamTerminate::new(
         info.live_id(),
-        error.clone(),
+        error,
         info.cache_dir(),
     )) {
         warn!("Failed to send stream terminate event: {}", e);
