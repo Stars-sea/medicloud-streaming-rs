@@ -12,15 +12,12 @@ use crate::settings::Settings;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use async_stream::try_stream;
 use log::info;
-use log::warn;
 use tokio::fs;
 use tokio::sync::RwLock;
-use tokio::time::timeout;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
@@ -34,10 +31,9 @@ pub struct LiveStreamService {
     port_allocator: PortAllocator,
     active_streams: RwLock<HashMap<String, StreamInfo>>,
 
-    segment_complete_tx: SegmentCompleteTx,
-
-    start_stream_tx: StartStreamTx,
     stop_stream_tx: StopStreamTx,
+
+    segment_complete_tx: SegmentCompleteTx,
 
     stream_connected_tx: StreamConnectedTx,
     stream_terminate_tx: StreamTerminateTx,
@@ -45,20 +41,19 @@ pub struct LiveStreamService {
 
 impl LiveStreamService {
     pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
-        let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
-
-        let (start_stream_tx, _) = OnStartStream::channel(16);
         let (stop_stream_tx, _) = OnStopStream::channel(16);
 
+        let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
+
         let (stream_connected_tx, _) = OnStreamConnected::channel(16);
-        let (stream_terminate_tx, task_finish_rx) = OnStreamTerminate::channel(16);
+        let (stream_terminate_tx, stream_terminate_rx) = OnStreamTerminate::channel(16);
 
         tokio::spawn(minio_uploader(
             SegmentCompleteStream::new(segment_complete_rx),
             minio_client,
         ));
         tokio::spawn(stream_termination_handler(StreamTerminateStream::new(
-            task_finish_rx,
+            stream_terminate_rx,
         )));
 
         let port_allocator = {
@@ -72,34 +67,28 @@ impl LiveStreamService {
             settings,
             port_allocator,
             active_streams: RwLock::new(HashMap::new()),
-            segment_complete_tx,
-            start_stream_tx,
             stop_stream_tx,
+            segment_complete_tx,
             stream_connected_tx,
             stream_terminate_tx,
         }
     }
 
-    async fn wait_stream_started(&self, live_id: &String) {
-        let mut rx = self.start_stream_tx.subscribe();
-        while let Ok(event) = rx.recv().await {
-            if event.live_id() == live_id {
-                break;
-            }
-        }
+    async fn alloc_port(&self) -> Result<u16> {
+        self.port_allocator
+            .allocate_safe_port()
+            .await
+            .ok_or(anyhow::bail!(
+                "No available ports to allocate for SRT stream"
+            ))
     }
 
-    async fn pull_stream_impl(
-        self: &Arc<Self>,
-        request: StartPullStreamRequest,
-        port: u16,
-    ) -> Result<()> {
-        let live_id = request.live_id;
-
+    async fn start_stream_impl(&self, live_id: &str, passphrase: &str, port: u16) -> Result<()> {
+        let live_id = live_id.to_string();
         let stream_info = StreamInfo::new(
             live_id.clone(),
             port,
-            request.passphrase.clone(),
+            passphrase.to_string(),
             &self.settings,
         );
         fs::create_dir_all(stream_info.cache_dir()).await?;
@@ -108,13 +97,15 @@ impl LiveStreamService {
             "Ready to pull stream at port {} (LiveId: {})",
             port, live_id
         );
+
         self.active_streams
             .write()
             .await
             .insert(live_id.clone(), stream_info.clone());
 
         let result = pull_srt_loop(
-            self.start_stream_tx.clone(),
+            self.stream_connected_tx.clone(),
+            self.stream_terminate_tx.clone(),
             self.segment_complete_tx.clone(),
             self.stop_stream_tx.subscribe(),
             &stream_info,
@@ -123,35 +114,23 @@ impl LiveStreamService {
         self.port_allocator.release_port(port).await;
         self.active_streams.write().await.remove(&live_id);
 
-        let error = if let Err(e) = result {
-            warn!("Pull stream for {} failed: {:?}", live_id, e);
-            Some(e.to_string())
-        } else {
-            info!("Stream terminated (LiveId: {})", live_id);
-            None
-        };
+        result
+    }
 
-        self.stream_terminate_tx
-            .send(OnStreamTerminate::new(
-                &live_id,
-                error,
-                stream_info.cache_dir(),
-            ))
-            .ok();
-
+    async fn stop_stream_impl(&self, live_id: &str) -> Result<()> {
+        self.stop_stream_tx.send(OnStopStream::new(live_id))?;
         Ok(())
     }
 
-    async fn list_active_streams_impl(self: &Arc<Self>) -> Vec<String> {
+    async fn list_active_streams_impl(&self) -> Vec<String> {
         self.active_streams.read().await.keys().cloned().collect()
     }
 
-    async fn get_stream_info_impl(self: &Arc<Self>, live_id: String) -> Option<StreamInfo> {
+    async fn get_stream_info_impl(&self, live_id: String) -> Option<StreamInfo> {
         self.active_streams.read().await.get(&live_id).cloned()
     }
 
     fn watch_stream_status_impl(
-        // self: &Arc<Self>,
         live_id: String,
         connected_rx: StreamConnectedRx,
         terminate_rx: StreamTerminateRx,
@@ -188,30 +167,21 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StartPullStreamResponse>, Status> {
         let request = request.into_inner();
 
-        let port = match self.port_allocator.allocate_safe_port().await {
-            Some(p) => p,
-            None => {
-                return Err(Status::resource_exhausted(
-                    "No available ports to allocate for SRT stream",
-                ));
-            }
+        let port = match self.alloc_port().await {
+            Ok(p) => p,
+            Err(e) => return Err(Status::resource_exhausted(e.to_string())),
         };
 
         let cloned_self = Arc::clone(self);
-        let cloned_request = request.clone();
-        tokio::spawn(async move { cloned_self.pull_stream_impl(cloned_request, port).await });
-
-        let timeout = timeout(
-            Duration::from_secs(60),
-            self.wait_stream_started(&request.live_id),
-        )
-        .await;
-
-        if timeout.is_err() {
-            return Err(Status::deadline_exceeded(
-                "Timed out waiting for stream to start",
-            ));
-        }
+        let StartPullStreamRequest {
+            live_id,
+            passphrase,
+        } = request.clone();
+        tokio::spawn(async move {
+            cloned_self
+                .start_stream_impl(&live_id, &passphrase, port)
+                .await
+        });
 
         if let Some(info) = self.get_stream_info_impl(request.live_id.clone()).await {
             let resp: StartPullStreamResponse = info.into();
@@ -227,10 +197,7 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StopPullStreamResponse>, Status> {
         let live_id = request.into_inner().live_id;
         let resp = StopPullStreamResponse {
-            is_success: self
-                .stop_stream_tx
-                .send(OnStopStream::new(&live_id))
-                .is_ok(),
+            is_success: self.stop_stream_impl(&live_id).await.is_ok(),
         };
         Ok(Response::new(resp))
     }

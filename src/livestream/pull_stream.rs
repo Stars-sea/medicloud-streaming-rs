@@ -1,5 +1,6 @@
 use super::events::{
-    OnSegmentComplete, OnStartStream, SegmentCompleteTx, StartStreamTx, StopStreamRx,
+    OnSegmentComplete, OnStreamConnected, OnStreamTerminate, SegmentCompleteTx, StopStreamRx,
+    StreamConnectedTx, StreamTerminateTx,
 };
 use super::stream_info::StreamInfo;
 
@@ -30,8 +31,8 @@ fn should_segment(
     false
 }
 
-pub(super) fn pull_srt_loop(
-    start_tx: StartStreamTx,
+fn pull_srt_loop_impl(
+    connected_tx: StreamConnectedTx,
     segment_complete_tx: SegmentCompleteTx,
     mut stop_rx: StopStreamRx,
     info: &StreamInfo,
@@ -55,7 +56,7 @@ pub(super) fn pull_srt_loop(
 
         // Send stream started event on first segment
         if segment_id == 1 {
-            start_tx.send(OnStartStream::new(live_id))?;
+            connected_tx.send(OnStreamConnected::new(live_id))?;
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
@@ -74,4 +75,23 @@ pub(super) fn pull_srt_loop(
     segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))?;
 
     Ok(())
+}
+
+pub(super) fn pull_srt_loop(
+    connected_tx: StreamConnectedTx,
+    terminate_tx: StreamTerminateTx,
+    segment_complete_tx: SegmentCompleteTx,
+    stop_rx: StopStreamRx,
+    info: &StreamInfo,
+) -> Result<()> {
+    let result = pull_srt_loop_impl(connected_tx, segment_complete_tx, stop_rx, info);
+
+    let error = result.as_ref().err().map(|e| e.to_string());
+    terminate_tx.send(OnStreamTerminate::new(
+        info.live_id(),
+        error,
+        info.cache_dir(),
+    ))?;
+
+    result
 }

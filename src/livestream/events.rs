@@ -53,30 +53,6 @@ impl OnSegmentComplete {
 }
 
 #[derive(Clone, Debug)]
-pub struct OnStartStream {
-    live_id: String,
-}
-
-pub type StartStreamRx = broadcast::Receiver<OnStartStream>;
-pub type StartStreamTx = broadcast::Sender<OnStartStream>;
-
-impl OnStartStream {
-    pub fn channel(capacity: usize) -> (StartStreamTx, StartStreamRx) {
-        broadcast::channel::<OnStartStream>(capacity)
-    }
-
-    pub fn new(live_id: &str) -> Self {
-        Self {
-            live_id: live_id.to_string(),
-        }
-    }
-
-    pub fn live_id(&self) -> &str {
-        &self.live_id
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct OnStopStream {
     live_id: String,
 }
