@@ -199,6 +199,21 @@ impl Livestream for Arc<LiveStreamService> {
     ) -> Result<Response<StartPullStreamResponse>, Status> {
         let request = request.into_inner();
 
+        // Validate input
+        if request.live_id.is_empty() {
+            return Err(Status::invalid_argument("live_id cannot be empty"));
+        }
+        if request.passphrase.is_empty() {
+            return Err(Status::invalid_argument("passphrase cannot be empty"));
+        }
+        
+        // Check if stream already exists
+        if self.get_stream_info_impl(request.live_id.clone()).await.is_some() {
+            return Err(Status::already_exists(
+                format!("Stream with live_id '{}' is already active", request.live_id)
+            ));
+        }
+
         let stream_info = match self
             .make_stream_info(&request.live_id, &request.passphrase)
             .await
@@ -223,6 +238,12 @@ impl Livestream for Arc<LiveStreamService> {
         request: Request<StopPullStreamRequest>,
     ) -> Result<Response<StopPullStreamResponse>, Status> {
         let live_id = request.into_inner().live_id;
+        
+        // Validate input
+        if live_id.is_empty() {
+            return Err(Status::invalid_argument("live_id cannot be empty"));
+        }
+
         let resp = StopPullStreamResponse {
             is_success: self.stop_stream_impl(&live_id).await.is_ok(),
         };
@@ -244,6 +265,12 @@ impl Livestream for Arc<LiveStreamService> {
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<GetStreamInfoResponse>, Status> {
         let live_id = request.into_inner().live_id;
+        
+        // Validate input
+        if live_id.is_empty() {
+            return Err(Status::invalid_argument("live_id cannot be empty"));
+        }
+
         if let Some(info) = self.get_stream_info_impl(live_id).await {
             let resp: GetStreamInfoResponse = info.into();
             Ok(Response::new(resp))
@@ -260,6 +287,11 @@ impl Livestream for Arc<LiveStreamService> {
         request: Request<WatchStreamStatusRequest>,
     ) -> Result<Response<Self::WatchStreamStatusStream>, Status> {
         let live_id = request.into_inner().live_id;
+
+        // Validate input
+        if live_id.is_empty() {
+            return Err(Status::invalid_argument("live_id cannot be empty"));
+        }
 
         let stream = LiveStreamService::watch_stream_status_impl(
             live_id.clone(),
