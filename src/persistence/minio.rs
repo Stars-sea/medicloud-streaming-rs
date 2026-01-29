@@ -1,3 +1,5 @@
+//! MinIO/S3 client for uploading stream segments.
+
 use anyhow::Result;
 use log::debug;
 use minio::s3::Client;
@@ -8,6 +10,7 @@ use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
 pub struct MinioClient {
     bucket: String,
@@ -16,6 +19,16 @@ pub struct MinioClient {
 }
 
 impl MinioClient {
+    /// Creates a new MinIO client and ensures the bucket exists.
+    ///
+    /// # Arguments
+    /// * `endpoint` - MinIO server endpoint URL
+    /// * `access_key` - Access key for authentication
+    /// * `secret_key` - Secret key for authentication
+    /// * `bucket` - Bucket name to use
+    ///
+    /// # Errors
+    /// Returns an error if connection fails or bucket cannot be created.
     pub async fn create(
         endpoint: &str,
         access_key: &str,
@@ -37,6 +50,14 @@ impl MinioClient {
         })
     }
 
+    /// Uploads a file to MinIO storage.
+    ///
+    /// # Arguments
+    /// * `filename` - Object key/name in the bucket
+    /// * `path` - Local file path to upload
+    ///
+    /// # Errors
+    /// Returns an error if upload fails.
     pub async fn upload_file(&self, filename: &str, path: &Path) -> Result<()> {
         self.client
             .put_object_content(self.bucket.as_str(), filename, ObjectContent::from(path))

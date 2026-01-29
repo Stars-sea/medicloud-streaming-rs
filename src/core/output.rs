@@ -1,3 +1,5 @@
+//! MPEG-TS output context wrapper for FFmpeg.
+
 use crate::core::context::{Context, ffmpeg_error};
 use crate::core::input::SrtInputContext;
 use anyhow::{Result, anyhow};
@@ -7,12 +9,18 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::FromStr;
 
+/// Wrapper for FFmpeg output context configured for MPEG-TS files.
+///
+/// # Safety
+/// Manages the lifecycle of AVFormatContext and AVIOContext through RAII.
+/// Resources are properly released in `release_and_close()` and `Drop`.
 pub struct TsOutputContext {
     ctx: *mut AVFormatContext,
     path: PathBuf,
 }
 
 impl TsOutputContext {
+    /// Converts a PathBuf to a C string for FFmpeg.
     fn path_to_cstring(path: &PathBuf) -> Result<CString> {
         Ok(CString::new(path.as_path().display().to_string())?)
     }

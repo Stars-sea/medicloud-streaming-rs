@@ -1,7 +1,11 @@
+//! Port allocation and management for SRT listeners.
+
 use std::collections::HashSet;
 
 use tokio::sync::RwLock;
 
+/// Manages allocation of ports within a specified range.
+/// Ensures ports are available before allocation by testing UDP and TCP binding.
 #[derive(Debug)]
 pub struct PortAllocator {
     start_port: u16,
@@ -10,6 +14,11 @@ pub struct PortAllocator {
 }
 
 impl PortAllocator {
+    /// Creates a new port allocator for the given port range.
+    ///
+    /// # Arguments
+    /// * `start_port` - First port in the range (inclusive)
+    /// * `end_port` - Last port in the range (inclusive)
     pub fn new(start_port: u16, end_port: u16) -> Self {
         Self {
             start_port,
@@ -18,6 +27,11 @@ impl PortAllocator {
         }
     }
 
+    /// Allocates an available port from the range.
+    /// Tests each port for availability before allocation.
+    ///
+    /// # Returns
+    /// `Some(port)` if an available port is found, `None` if all ports are in use.
     pub async fn allocate_safe_port(&self) -> Option<u16> {
         let mut allocated = self.allocated_ports.write().await;
         for port in self.start_port..=self.end_port {
@@ -29,12 +43,23 @@ impl PortAllocator {
         None
     }
 
+    /// Releases a previously allocated port back to the pool.
+    ///
+    /// # Arguments
+    /// * `port` - The port number to release
     pub async fn release_port(&self, port: u16) {
         let mut allocated = self.allocated_ports.write().await;
         allocated.remove(&port);
     }
 }
 
+/// Tests if a port is available for binding on both UDP and TCP for IPv4 and IPv6.
+///
+/// # Arguments
+/// * `port` - The port number to test
+///
+/// # Returns
+/// `true` if the port is available, `false` otherwise
 async fn test_port(port: u16) -> bool {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
     use tokio::net::{TcpListener, ToSocketAddrs, UdpSocket};

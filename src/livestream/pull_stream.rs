@@ -1,3 +1,5 @@
+//! Core SRT stream pulling and segmentation logic.
+
 use super::events::{
     OnSegmentComplete, OnStreamConnected, OnStreamTerminate, SegmentCompleteTx, StopStreamRx,
     StreamConnectedTx, StreamTerminateTx,
@@ -10,7 +12,9 @@ use crate::core::output::TsOutputContext;
 use crate::core::packet::Packet;
 
 use anyhow::Result;
+use log::{debug, warn};
 
+/// Determines if a new segment should be created based on packet and duration.
 fn should_segment(
     packet: &Packet,
     input_ctx: &impl Context,
@@ -31,6 +35,7 @@ fn should_segment(
     false
 }
 
+/// Main loop for pulling SRT stream, segmenting, and writing to disk.
 fn pull_srt_loop_impl(
     connected_tx: StreamConnectedTx,
     segment_complete_tx: SegmentCompleteTx,
@@ -47,21 +52,33 @@ fn pull_srt_loop_impl(
     let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
 
     let mut last_start_pts = 0;
+    let mut stream_started_notified = false;
 
     while !stop_rx.try_recv().is_ok_and(|id| id.live_id() == live_id) {
         let packet = Packet::alloc()?;
-        if packet.read_safely(&input_ctx) == 0 {
+        let bytes_read = packet.read_safely(&input_ctx);
+
+        if bytes_read == 0 {
+            debug!("Stream ended for {}", live_id);
             break;
         }
 
-        // Send stream started event on first segment
-        if segment_id == 1 {
-            connected_tx.send(OnStreamConnected::new(live_id))?;
+        // Send stream started event on first successful packet read
+        if !stream_started_notified {
+            if let Err(e) = connected_tx.send(OnStreamConnected::new(live_id)) {
+                warn!("Failed to send stream connected event: {}", e);
+            }
+            stream_started_notified = true;
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
             output_ctx.release_and_close()?;
-            segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))?;
+
+            if let Err(e) =
+                segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))
+            {
+                warn!("Failed to send segment complete event: {}", e);
+            }
 
             segment_id += 1;
             output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -72,11 +89,15 @@ fn pull_srt_loop_impl(
     }
 
     output_ctx.release_and_close()?;
-    segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))?;
+
+    if let Err(e) = segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx)) {
+        warn!("Failed to send final segment complete event: {}", e);
+    }
 
     Ok(())
 }
 
+/// Wrapper function that handles stream termination event.
 pub(super) fn pull_srt_loop(
     connected_tx: StreamConnectedTx,
     terminate_tx: StreamTerminateTx,
@@ -87,11 +108,14 @@ pub(super) fn pull_srt_loop(
     let result = pull_srt_loop_impl(connected_tx, segment_complete_tx, stop_rx, info);
 
     let error = result.as_ref().err().map(|e| e.to_string());
-    terminate_tx.send(OnStreamTerminate::new(
+
+    if let Err(e) = terminate_tx.send(OnStreamTerminate::new(
         info.live_id(),
         error,
         info.cache_dir(),
-    ))?;
+    )) {
+        warn!("Failed to send stream terminate event: {}", e);
+    }
 
     result
 }
