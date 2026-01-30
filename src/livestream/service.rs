@@ -9,9 +9,9 @@ use super::pull_stream::pull_srt_loop;
 use super::stream_info::StreamInfo;
 
 use crate::persistence::minio::MinioClient;
+use crate::persistence::redis::RedisClient;
 use crate::settings::Settings;
 
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -19,7 +19,6 @@ use anyhow::Result;
 use async_stream::try_stream;
 use log::{info, warn};
 use tokio::fs;
-use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
@@ -35,8 +34,9 @@ const STREAM_EVENT_CHANNEL_SIZE: usize = 16;
 pub struct LiveStreamService {
     settings: Settings,
 
+    redis_client: RedisClient,
+
     port_allocator: PortAllocator,
-    active_streams: RwLock<HashMap<String, StreamInfo>>,
 
     stop_stream_tx: StopStreamTx,
 
@@ -50,9 +50,10 @@ impl LiveStreamService {
     /// Creates a new LiveStreamService.
     ///
     /// # Arguments
+    /// * `redis_client` - Client for caching active stream info to Redis
     /// * `minio_client` - Client for uploading segments to MinIO
     /// * `settings` - Application settings
-    pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
+    pub fn new(redis_client: RedisClient, minio_client: MinioClient, settings: Settings) -> Self {
         let (stop_stream_tx, _) = OnStopStream::channel(STOP_STREAM_CHANNEL_SIZE);
 
         let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
@@ -74,8 +75,8 @@ impl LiveStreamService {
 
         Self {
             settings,
+            redis_client,
             port_allocator,
-            active_streams: RwLock::new(HashMap::new()),
             stop_stream_tx,
             segment_complete_tx,
             stream_connected_tx,
@@ -137,11 +138,9 @@ impl LiveStreamService {
             stream_info.port()
         );
 
-        // TODO: Check for duplicate and insert atomically
-        self.active_streams
-            .write()
-            .await
-            .insert(live_id.clone(), stream_info.clone());
+        self.redis_client
+            .cache_stream_info(stream_info.clone())
+            .await?;
 
         let result = pull_srt_loop(
             self.stream_connected_tx.clone(),
@@ -151,7 +150,7 @@ impl LiveStreamService {
             &stream_info,
         );
 
-        self.active_streams.write().await.remove(&live_id);
+        self.redis_client.remove_stream_info(&live_id).await?;
 
         if let Err(e) = self.release_stream_resources(stream_info).await {
             warn!("Failed to release resources for stream {live_id}: {e}");
@@ -165,12 +164,18 @@ impl LiveStreamService {
         Ok(())
     }
 
-    async fn list_active_streams_impl(&self) -> Vec<String> {
-        self.active_streams.read().await.keys().cloned().collect()
+    async fn list_active_streams_impl(&self) -> Result<Vec<String>> {
+        self.redis_client.get_live_ids().await
     }
 
     async fn get_stream_info_impl(&self, live_id: String) -> Option<StreamInfo> {
-        self.active_streams.read().await.get(&live_id).cloned()
+        match self.redis_client.find_stream_info(&live_id).await {
+            Ok(info) => info,
+            Err(e) => {
+                warn!("Failed to get stream info: {e}");
+                None
+            }
+        }
     }
 
     fn watch_stream_status_impl(
@@ -258,10 +263,15 @@ impl Livestream for Arc<LiveStreamService> {
         &self,
         _: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
-        let resp = ListActiveStreamsResponse {
-            live_ids: self.list_active_streams_impl().await,
-        };
-        Ok(Response::new(resp))
+        let resp = self
+            .list_active_streams_impl()
+            .await
+            .map(|live_ids| ListActiveStreamsResponse { live_ids });
+
+        match resp {
+            Ok(response) => Ok(Response::new(response)),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
     }
 
     async fn get_stream_info(

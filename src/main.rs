@@ -8,12 +8,11 @@ use tonic::transport::Server;
 
 use crate::livestream::service::{LiveStreamService, LivestreamServer};
 use crate::persistence::minio::MinioClient;
+use crate::persistence::redis::RedisClient;
 
 mod core;
-mod persistence {
-    pub mod minio;
-}
 mod livestream;
+mod persistence;
 mod settings;
 
 #[tokio::main]
@@ -27,20 +26,17 @@ async fn main() -> Result<()> {
 
     let settings = settings::Settings::load()?;
 
-    let minio_endpoint = env_var("MINIO_ENDPOINT")?;
-    let minio_access_key = env_var("MINIO_ACCESS_KEY")?;
-    let minio_secret_key = env_var("MINIO_SECRET_KEY")?;
-    let minio_bucket = env_var("MINIO_BUCKET")?;
+    let redis_client = RedisClient::create(&env_var("REDIS_ADDRESS")?).await?;
 
     let minio_client = MinioClient::create(
-        &minio_endpoint,
-        &minio_access_key,
-        &minio_secret_key,
-        &minio_bucket,
+        &env_var("MINIO_ENDPOINT")?,
+        &env_var("MINIO_ACCESS_KEY")?,
+        &env_var("MINIO_SECRET_KEY")?,
+        &env_var("MINIO_BUCKET")?,
     )
     .await?;
 
-    let livestream = Arc::new(LiveStreamService::new(minio_client, settings));
+    let livestream = Arc::new(LiveStreamService::new(redis_client, minio_client, settings));
 
     let grpc_port = env_var("GRPC_PORT")?;
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);

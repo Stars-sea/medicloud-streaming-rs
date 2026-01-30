@@ -8,3 +8,5 @@ mod stream_info;
 mod grpc {
     tonic::include_proto!("livestream");
 }
+
+pub use stream_info::StreamInfo;
