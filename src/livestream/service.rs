@@ -3,12 +3,10 @@
 use super::events::*;
 use super::grpc::livestream_server::Livestream;
 use super::grpc::*;
-use super::handlers::*;
 use super::port_allocator::PortAllocator;
 use super::pull_stream::pull_srt_loop;
 use super::stream_info::StreamInfo;
 
-use crate::persistence::minio::MinioClient;
 use crate::persistence::redis::RedisClient;
 use crate::settings::Settings;
 
@@ -53,18 +51,15 @@ impl LiveStreamService {
     /// * `redis_client` - Client for caching active stream info to Redis
     /// * `minio_client` - Client for uploading segments to MinIO
     /// * `settings` - Application settings
-    pub fn new(redis_client: RedisClient, minio_client: MinioClient, settings: Settings) -> Self {
+    pub fn new(
+        redis_client: RedisClient,
+        segment_complete_tx: SegmentCompleteTx,
+        settings: Settings,
+    ) -> Self {
         let (stop_stream_tx, _) = OnStopStream::channel(STOP_STREAM_CHANNEL_SIZE);
-
-        let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel();
 
         let (stream_connected_tx, _) = OnStreamConnected::channel(STREAM_EVENT_CHANNEL_SIZE);
         let (stream_terminate_tx, _) = OnStreamTerminate::channel(STREAM_EVENT_CHANNEL_SIZE);
-
-        tokio::spawn(minio_uploader(
-            SegmentCompleteStream::new(segment_complete_rx),
-            minio_client,
-        ));
 
         let port_allocator = {
             let (start_port, end_port) = settings

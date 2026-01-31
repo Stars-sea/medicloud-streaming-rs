@@ -1,5 +1,4 @@
 pub mod events;
-mod handlers;
 mod port_allocator;
 mod pull_stream;
 pub mod service;
